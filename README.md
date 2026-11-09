@@ -1,5 +1,5 @@
 # Enterobacteriaceae Cd Uptake Comparative Genome Synteny
-
+![Comparative genome synteny workflow](overview.png)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24089973.svg)](https://doi.org/10.5281/zenodo.24089973)
 
 Compare cadmium-uptake gene neighborhoods using BEDTools, BLAST, MAFFT, IQ-TREE
