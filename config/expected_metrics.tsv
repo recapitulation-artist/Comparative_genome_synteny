@@ -1,0 +1,14 @@
+metric	value
+sequences	29
+tree_tips	29
+genes	579
+gene_categories	28
+genera	8
+uptake_genes	29
+input_blast_hits	2189
+plotted_blast_hits	135
+adjacent_pairs	28
+reverse_hits	2
+identity_ge90	67
+identity_80to90	45
+identity_70to80	23
