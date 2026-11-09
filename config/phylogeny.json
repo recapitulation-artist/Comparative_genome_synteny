@@ -2,12 +2,16 @@
   "schema_version": 1,
   "mafft_version": "7.526",
   "iqtree_version": "3.1.4",
-  "threads": 96,
-  "required_node": "node2",
-  "sequences": 29,
-  "negative_target_strands": 12,
-  "branches": ["default", "oriented"],
-  "mafft_options": ["--thread", "96", "--threadtb", "96"],
-  "iqtree_options": ["-T", "96"],
+  "threads": 56,
+  "mafft_options": [
+    "--thread",
+    "56",
+    "--threadtb",
+    "56"
+  ],
+  "iqtree_options": [
+    "-T",
+    "56"
+  ],
   "runtime_lock": "environment/phylogeny_linux_64.lock"
 }

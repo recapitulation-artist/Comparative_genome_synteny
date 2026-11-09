@@ -7,22 +7,18 @@ source(file.path(dirname(script), "palettes.R"))
 invisible(Sys.setlocale("LC_COLLATE", "C"))
 args <- commandArgs(trailingOnly = TRUE)
 entry <- "main"
-entry_explicit <- FALSE
 target_gene <- "Nramp"
 input_dir <- NULL
 phylogeny_dir <- NULL
 gene_palette <- "main-muted"
 link_palette <- "blue"
 link_custom <- ""
-legacy_tree <- "reference"
-legacy_annotations <- "curated"
 usage <- paste("Usage: Rscript scripts/verify_results.R [--entry main|curated|auto]",
                "[--target-gene NAME] [--input-dir PATH] [--phylogeny-dir PATH]",
                "[--gene-palette NAME] [--link-palette NAME] [--link-colors HEX,HEX,HEX]")
 while (length(args)) {
   name <- sub("=.*$", "", args[1])
-  if (!name %in% c("--entry", "--target-gene", "--input-dir", "--phylogeny-dir",
-                  "--tree-source", "--annotation-source", "--gene-palette", "--link-palette",
+  if (!name %in% c("--entry", "--target-gene", "--input-dir", "--phylogeny-dir", "--gene-palette", "--link-palette",
                   "--link-colors")) stop(usage)
   if (grepl("=", args[1], fixed = TRUE)) {
     value <- sub("^[^=]+=", "", args[1]); args <- args[-1]
@@ -31,20 +27,13 @@ while (length(args)) {
     value <- args[2]; args <- args[-c(1, 2)]
   }
   if (!nzchar(value) && name != "--link-colors") stop(usage)
-  if (name == "--entry") { entry <- value; entry_explicit <- TRUE }
+  if (name == "--entry") entry <- value
   if (name == "--target-gene") target_gene <- value
   if (name == "--input-dir") input_dir <- value
   if (name == "--phylogeny-dir") phylogeny_dir <- value
   if (name == "--gene-palette") gene_palette <- value
   if (name == "--link-palette") link_palette <- value
   if (name == "--link-colors") link_custom <- value
-  if (name == "--tree-source") legacy_tree <- value
-  if (name == "--annotation-source") legacy_annotations <- value
-}
-if (!legacy_tree %in% c("reference", "inferred") ||
-    !legacy_annotations %in% c("curated", "raw")) stop(usage)
-if (!entry_explicit) entry <- if (legacy_annotations == "raw") "auto" else {
-  if (legacy_tree == "inferred") "curated" else "main"
 }
 if (!entry %in% c("main", "curated", "auto")) stop(usage)
 if (!gene_palette %in% gene_palette_names || !link_palette %in% link_palette_names) stop(usage)
@@ -54,7 +43,8 @@ resolve_path <- function(path) if (startsWith(path, "/")) path else file.path(pr
 relative_path <- function(path) {
   path <- normalizePath(resolve_path(path), mustWork = TRUE)
   prefix <- paste0(normalizePath(project_root), "/")
-  if (startsWith(path, prefix)) substring(path, nchar(prefix) + 1L) else path
+  if (!startsWith(path, prefix)) stop("Analysis inputs must be inside the repository: ", path)
+  substring(path, nchar(prefix) + 1L)
 }
 read_tsv <- function(path, character = FALSE) read.delim(path, stringsAsFactors = FALSE,
   quote = "", comment.char = "", check.names = FALSE, na.strings = character(),

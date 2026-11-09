@@ -3,14 +3,14 @@
 
 import argparse
 import json
-import os
 from pathlib import Path
 import re
 import sys
 
 from extract_regions import ROOT, fasta_bytes, fasta_records, require, table, write_table
 from run_phylogeny import (CONFIG_PATH, cached_state, configured, execute_branch, payload_hash,
-                           resolve_tools, save_json, scheduler_context, sha256, workflow_lock)
+                           portable_commands, resolve_tools, save_json, scheduler_context, sha256, workflow_lock)
+from runtime import DEFAULT_THREADS, validate_threads
 
 
 def prepare_inputs(input_dir):
@@ -79,12 +79,16 @@ def main():
     parser.add_argument("--replay-manifest", type=Path, help="Recorded run (default: entry/phylogeny/replay_manifest.json)")
     parser.add_argument("--mafft", help="MAFFT 7.526 executable")
     parser.add_argument("--iqtree", help="IQ-TREE 3.1.4 executable")
+    parser.add_argument("--threads", type=int, default=DEFAULT_THREADS, help="CPU budget (default: 56)")
     parser.add_argument("--check-inputs", action="store_true", help="Validate prepared inputs without running tools")
     args = parser.parse_args()
     require(sys.version_info >= (3, 9), "Python 3.9 or newer is required")
     resolve = lambda path: (path if path.is_absolute() else ROOT / path).resolve()
     input_dir = resolve(args.input_dir) if args.input_dir else ROOT / "results" / args.entry
+    require(ROOT in input_dir.parents, "Prepared inputs must be inside the repository")
     records, species, sources = prepare_inputs(input_dir)
+    require(all(ROOT in path.resolve().parents for path in sources.values()),
+            "Prepared inputs must not link to files outside the repository")
     negative_count = sum(row["target_strand"] == "-" for row in species)
     if args.check_inputs:
         print(f"Validated {len(records)} {args.entry} regions, including {negative_count} negative-strand targets.")
@@ -94,24 +98,25 @@ def main():
     require(output != ROOT and ROOT / "data" not in (output, *output.parents), "Tree output must not overwrite repository inputs")
     payload = fasta_bytes(records)
     replay_path = resolve(args.replay_manifest) if args.replay_manifest else input_dir / "phylogeny/replay_manifest.json"
+    if args.mode == "replay":
+        require(ROOT in replay_path.resolve().parents, "Replay manifest must be inside the repository")
     replay = load_replay(replay_path, args.entry, payload) if args.mode == "replay" else None
-    config = configured()
+    config = configured(validate_threads(args.threads))
     config.update(sequences=len(records), negative_target_strands=negative_count)
     tools, tool_info = resolve_tools(config, args.mafft, args.iqtree)
     sources.update(entry_script=Path(__file__).resolve(), phylogeny_script=ROOT / "scripts/run_phylogeny.py",
                    input_helpers=ROOT / "scripts/extract_regions.py", config=CONFIG_PATH,
-                   runtime_lock=ROOT / config["runtime_lock"])
+                   runtime_lock=ROOT / config["runtime_lock"], runtime_helpers=ROOT / "scripts/runtime.py")
     source_hashes = {key: sha256(path) for key, path in sources.items()}
     signature = payload_hash(json.dumps(dict(schema_version=1, entry=args.entry, branch="default", mode=args.mode,
                                          input_sha256=payload_hash(payload), source_sha256=source_hashes,
+                                         threads=config["threads"], commands=portable_commands(config, replay),
                                          tools={name: dict(version=info["version"], sha256=info["executable_sha256"])
                                                 for name, info in tool_info.items()}, replay=replay), sort_keys=True).encode("utf-8"))
     with workflow_lock(output):
         directory = output / "default"
         state = cached_state(directory, signature, payload, records, replay, 0, config)
         needs_compute = state is None or state.get("status") != "completed"
-        if needs_compute:
-            require(os.environ.get("SLURM_NTASKS", "1") == "1", "Tree inference requires one Slurm task")
         execution = scheduler_context(config) if needs_compute else None
         species_path = output / "species.tsv"
         if species_path.exists():
@@ -131,7 +136,7 @@ def main():
                           negative_target_strands=negative_count, threads=config["threads"],
                           inputs={key: dict(path=str(path.relative_to(ROOT)) if ROOT in path.parents else str(path),
                                             sha256=source_hashes[key]) for key, path in sources.items()},
-                          tools=tool_info)
+                          execution=execution if execution else state.get("execution"), tools=tool_info)
         save_json(output / "provenance.json", provenance)
         actual = {key: state[key] for key in ("seed", "input_sha256", "aligned_sha256", "tree_sha256")}
         save_json(output / "replay_manifest.json", dict(schema_version=1, entry=args.entry, branches=dict(default=actual)))

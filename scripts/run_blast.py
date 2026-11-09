@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from extract_regions import ROOT, fasta_bytes, fasta_records, require, table, write_table
+from runtime import DEFAULT_THREADS, execution_context, thread_environment, validate_threads
 
 
 COLUMNS = ["seq_id", "seq_id2", "pident", "length", "mismatch", "gapopen", "start", "end",
@@ -36,10 +37,10 @@ def resolve_tool(name, requested, version, environment):
     local = ROOT / ".tools" / "blast" / "bin" / name
     candidate = requested or (str(local) if local.is_file() else shutil.which(name))
     require(candidate, f"{name} is missing; run make setup-blast or provide --{name} PATH")
-    path = Path(candidate)
+    path = Path(candidate).expanduser()
     if not path.is_absolute():
         path = ROOT / path if (ROOT / path).is_file() else Path(shutil.which(str(path)) or str(path))
-    require(path.is_file(), f"Executable not found: {candidate}")
+    require(path.is_file() and os.access(path, os.X_OK), f"Executable not found: {candidate}")
     path = path.resolve()
     actual = run([path, "-version"], environment).splitlines()[0]
     require(actual == f"{name}: {version}", f"Expected {name} {version}; found {actual}")
@@ -206,23 +207,23 @@ def main():
     parser.add_argument("--validate-reference", action=argparse.BooleanOptionalAction, default=None,
                         help="Audit against historical HSPs (enabled only for the legacy results directory by default)")
     parser.add_argument("--check-tools", action="store_true", help="Check tool versions and exit")
-    parser.add_argument("--threads", type=int, help="Resource override (default: locked configuration)")
+    parser.add_argument("--threads", type=int, default=DEFAULT_THREADS, help="CPU budget (default: 56)")
     args = parser.parse_args()
     require(sys.version_info >= (3, 9), "Python 3.9 or newer is required")
     config = json.loads((ROOT / "config" / "blast.json").read_text(encoding="utf-8"))
-    if args.threads is not None:
-        require(args.threads == 96, "This workflow requires exactly 96 BLAST threads")
-        config["num_threads"] = args.threads
-    require(config["num_threads"] == 96, "The BLAST configuration must request 96 threads")
+    config["num_threads"] = args.threads
     require(config["outfmt"] == "6 " + FIELDS, "Expected the standard 12-field BLAST output")
-    environment = {**os.environ, **BLAST_ENV}
+    environment = {**os.environ, **thread_environment(), **BLAST_ENV}
     blastn, blastn_version = resolve_tool("blastn", args.blastn, config["version"], environment)
     makeblastdb, db_version = resolve_tool("makeblastdb", args.makeblastdb, config["version"], environment)
     if args.check_tools:
         print(f"{blastn_version}; {db_version}")
         return
+    config["num_threads"] = validate_threads(args.threads)
+    execution = execution_context(args.threads)
     resolve = lambda path: (path if path.is_absolute() else ROOT / path).resolve()
     input_dir = resolve(args.input_dir)
+    require(ROOT in input_dir.parents, "BLAST inputs must be inside the repository")
     legacy = input_dir == (ROOT / "results").resolve() and not (input_dir / "sequences.csv").is_file()
     output = resolve(args.work_dir) if args.work_dir else input_dir / "blast"
     destination = resolve(args.output) if args.output else (ROOT / "data/blast_hits.csv" if legacy
@@ -232,15 +233,18 @@ def main():
             "BLAST work directory must not overwrite repository inputs")
     output.mkdir(parents=True, exist_ok=True)
     ranks, lengths, sources = prepare_input(output, input_dir)
+    require(all(ROOT in path.resolve().parents for path in sources.values()),
+            "BLAST inputs must not link to files outside the repository")
     require(destination not in {path.resolve() for path in sources.values()}, "BLAST output would overwrite an input")
-    sources.update(config=ROOT / "config/blast.json", script=Path(__file__).resolve())
+    sources.update(config=ROOT / "config/blast.json", script=Path(__file__).resolve(),
+                   runtime_helpers=ROOT / "scripts/runtime.py")
     input_hashes = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in sources.items()}
     options = []
     for name in BLAST_OPTIONS:
         value = config[name]
         options.extend(["-" + name, str(value).lower() if isinstance(value, bool) else str(value)])
     portable = lambda path: str(path.relative_to(ROOT)) if ROOT in path.parents else str(path)
-    templates = dict(environment=BLAST_ENV,
+    templates = dict(environment={**thread_environment(), **BLAST_ENV},
                      makeblastdb=["makeblastdb", "-in", portable(output / "sequences.fasta"), "-dbtype", "nucl",
                                   "-parse_seqids", "-blastdb_version", str(config["db_version"]),
                                   "-out", "<temporary>/regions"],
@@ -259,7 +263,7 @@ def main():
     rows, counts = convert_hits(output / "all_hits.tsv", destination, ranks, lengths)
     for key, path in sources.items():
         require(hashlib.sha256(path.read_bytes()).hexdigest() == input_hashes[key], f"BLAST input changed during execution: {path}")
-    provenance = dict(schema_version=1, threads=config["num_threads"],
+    provenance = dict(schema_version=1, threads=config["num_threads"], execution=execution,
                       inputs={key: dict(path=portable(path), sha256=input_hashes[key]) for key, path in sources.items()},
                       tools={name: dict(path=str(path), version=version,
                                         sha256=hashlib.sha256(path.read_bytes()).hexdigest())

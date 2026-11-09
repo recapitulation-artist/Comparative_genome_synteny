@@ -30,9 +30,6 @@ def main():
             raise ValueError(f"Existing phylogeny environment failed validation: {prefix}")
         conda = shutil.which("conda")
         if conda is None:
-            candidate = Path.home() / "miniforge3/bin/conda"
-            conda = str(candidate) if candidate.is_file() else None
-        if conda is None:
             raise ValueError("Install Conda to restore MAFFT 7.526 and IQ-TREE 3.1.4")
         subprocess.run([conda, "create", "--yes", "--prefix", str(prefix),
                         "--file", str(ROOT / config["runtime_lock"])], check=True)

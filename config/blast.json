@@ -11,7 +11,7 @@
   "soft_masking": true,
   "strand": "both",
   "max_target_seqs": 500,
-  "num_threads": 96,
+  "num_threads": 56,
   "db_version": 5,
   "outfmt": "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore"
 }

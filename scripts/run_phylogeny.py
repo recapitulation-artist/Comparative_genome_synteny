@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Align both region orientations and infer trees on a 96-CPU node2 Slurm task."""
+"""Shared MAFFT/IQ-TREE execution, resumable state and provenance helpers."""
 
 import argparse
 from contextlib import contextmanager
@@ -9,18 +9,16 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import platform
 import re
 import shutil
-import socket
 import subprocess
 import sys
 
-from extract_regions import ROOT, fasta_bytes, fasta_records, require, table, write_table
+from extract_regions import ROOT, fasta_records, require, write_table
+from runtime import DEFAULT_THREADS, execution_context, thread_environment
 
 
 CONFIG_PATH = ROOT / "config/phylogeny.json"
-BRANCHES = ("default", "oriented")
 
 
 def sha256(path):
@@ -41,21 +39,22 @@ def save_json(path, value):
     temporary.replace(path)
 
 
-def configured():
+def configured(threads=None):
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    require(config["schema_version"] == 1 and config["threads"] == 96,
-            "Expected the 96-thread phylogeny configuration")
-    require(tuple(config["branches"]) == BRANCHES, "Expected default and oriented branches")
-    require(config["mafft_options"] == ["--thread", "96", "--threadtb", "96"]
-            and config["iqtree_options"] == ["-T", "96"],
-            "Only the documented resource options are supported")
+    require(config["schema_version"] == 1, "Unsupported phylogeny configuration schema")
+    value = config.get("threads", DEFAULT_THREADS) if threads is None else threads
+    require(not isinstance(value, bool) and str(value).isdigit() and int(value) > 0,
+            "Phylogeny threads must be a positive integer")
+    config["threads"] = int(value)
+    # Preserve the scientific defaults; these flags specify resources only.
+    config["mafft_options"] = ["--thread", str(value), "--threadtb", str(value)]
+    config["iqtree_options"] = ["-T", str(value)]
     return config
 
 
 def resolve_tool(name, requested, version):
     candidates = [requested] if requested else [
         str(ROOT / ".tools/phylogeny/bin" / name),
-        str(Path.home() / "miniforge3/envs/Megagenomic_profile/bin" / name),
         shutil.which(name),
     ]
     problems = []
@@ -88,85 +87,8 @@ def resolve_tools(config, mafft=None, iqtree=None):
 
 
 def scheduler_context(config):
-    host = socket.gethostname().split(".", 1)[0]
-    job = os.environ.get("SLURM_JOB_ID", "")
-    task_cpus = os.environ.get("SLURM_CPUS_PER_TASK", "")
-    node_cpus = os.environ.get("SLURM_CPUS_ON_NODE", "")
-    affinity = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else []
-    require(host == config["required_node"], "Phylogeny computation is restricted to node2")
-    require(job.isdigit(), "Phylogeny computation requires an active Slurm job")
-    require(task_cpus.isdigit() and int(task_cpus) == config["threads"],
-            "Slurm must allocate exactly 96 CPUs per task")
-    require(node_cpus.isdigit() and int(node_cpus) >= config["threads"],
-            "Slurm reports fewer than 96 CPUs on the allocated node")
-    require(len(affinity) >= config["threads"], "Process CPU affinity exposes fewer than 96 CPUs")
-    nodes = os.environ.get("SLURM_JOB_NUM_NODES", os.environ.get("SLURM_NNODES", ""))
-    require(nodes == "1", "The phylogeny task requires a single-node Slurm allocation")
-    return dict(node=host, job_id=job, cpus_per_task=int(task_cpus), cpus_on_node=int(node_cpus),
-                cpu_affinity=affinity, slurm_job_nodelist=os.environ.get("SLURM_JOB_NODELIST", ""),
-                slurm_step_id=os.environ.get("SLURM_STEP_ID", ""), platform=platform.platform(),
-                python_version=sys.version.split()[0], started_at=now())
-
-
-def prepare_inputs(config):
-    sources = dict(sequences=ROOT / "data/sequences.csv", genomes=ROOT / "data/genomes.tsv",
-                   regions=ROOT / "results/regions.tsv",
-                   extracted_fasta=ROOT / "results/extracted_29_sequences.fasta")
-    sequences = table(sources["sequences"], ",")
-    regions, genomes = table(sources["regions"]), table(sources["genomes"])
-    records = list(fasta_records(sources["extracted_fasta"]))
-    order = [row["seq_id"] for row in sequences]
-    require(len(order) == config["sequences"] and len(set(order)) == len(order),
-            "Expected exactly 29 unique sequence IDs")
-    require(len(records) == len(regions) == len(genomes) == len(order),
-            "FASTA, region, genome and sequence counts differ")
-    require([row["seq_id"] for row in regions] == order, "Region order differs from sequences.csv")
-    genome_index = {row["seq_id"]: row for row in genomes}
-    require(len(genome_index) == len(order) and set(genome_index) == set(order), "Genome IDs differ")
-    normalized, oriented, species = [], [], []
-    complement = str.maketrans("ACGTN", "TGCAN")
-    for rank, ((header, dna), sequence, region) in enumerate(zip(records, sequences, regions), 1):
-        identifier = sequence["seq_id"]
-        genome = genome_index[identifier]
-        dna = dna.upper()
-        require(header == region["fasta_header"], f"FASTA/region header differs: {identifier}")
-        require(len(dna) == int(sequence["length"]) == int(region["length"])
-                == int(genome["region_length"]), f"Region length differs: {identifier}")
-        require(dna and set(dna) <= set("ACGTN"), f"Unexpected DNA alphabet: {identifier}")
-        require(region["assembly_accession"] == genome["assembly_accession"],
-                f"Region/genome assembly differs: {identifier}")
-        require(region["target_strand"] in {"+", "-"} and region["region_strand"] == "+",
-                f"Unexpected source orientation: {identifier}")
-        require(header == region["contig"] + "_" + region["target_protein_id"],
-                f"FASTA header is not the mapped contig/target pair: {identifier}")
-        reverse = region["target_strand"] == "-"
-        normalized.append((identifier, dna))
-        oriented.append((identifier, dna.translate(complement)[::-1] if reverse else dna))
-        species.append(dict(rank=rank, seq_id=identifier, organism_name=genome["organism_name"],
-                            strain=genome["strain"], assembly_accession=region["assembly_accession"],
-                            assembly_status=genome["assembly_status"], genome_notes=genome.get("genome_notes", ""),
-                            contig=region["contig"], target_strand=region["target_strand"],
-                            target_protein_id=region["target_protein_id"], fasta_header=header,
-                            length=len(dna), reverse_complemented_in_oriented_branch=reverse))
-    require(sum(row["reverse_complemented_in_oriented_branch"] for row in species)
-            == config["negative_target_strands"], "Expected 12 negative-strand targets")
-    return dict(default=normalized, oriented=oriented), species, {key: sha256(path) for key, path in sources.items()}
-
-
-def replay_settings(path, mode):
-    if mode == "default":
-        return {branch: None for branch in BRANCHES}
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    require(manifest.get("schema_version") == 1 and set(manifest["branches"]) == set(BRANCHES),
-            "Replay manifest must define both branches with schema_version=1")
-    branches = manifest["branches"]
-    for branch, settings in branches.items():
-        require(isinstance(settings["seed"], int) and not isinstance(settings["seed"], bool)
-                and settings["seed"] > 0, f"Invalid replay seed: {branch}")
-        for key in ("aligned_sha256", "tree_sha256"):
-            require(re.fullmatch(r"[0-9a-f]{64}", settings[key]) is not None,
-                    f"Invalid replay {key}: {branch}")
-    return branches
+    """Return the same execution metadata for local and allocated runs."""
+    return execution_context(config["threads"])
 
 
 def portable_commands(config, replay):
@@ -176,14 +98,14 @@ def portable_commands(config, replay):
     return dict(mafft=["mafft", *config["mafft_options"], "input.fasta"],
                 mafft_stdout="aligned.fasta", mafft_stderr="mafft.log", iqtree=inference,
                 iqtree_stdout="iqtree.stdout.log", iqtree_stderr="iqtree.stderr.log",
-                environment=dict(LC_ALL="C", OMP_NUM_THREADS=str(config["threads"]), OMP_DYNAMIC="FALSE"),
+                environment=dict(LC_ALL="C", **thread_environment(config["threads"])),
                 unset_environment=["MAFFT_BINARIES"])
 
 
 def alignment_metrics(directory, records, reversed_count):
     aligned = list(fasta_records(directory / "aligned.fasta"))
     require([name for name, _ in aligned] == [name for name, _ in records],
-            "Alignment must preserve all 29 sequence IDs and their input order")
+            "Alignment must preserve all sequence IDs and their input order")
     lengths = {len(dna) for _, dna in aligned}
     require(len(lengths) == 1 and next(iter(lengths)) > 0, "Alignment rows have unequal or empty lengths")
     for (name, dna), (_, original) in zip(aligned, records):
@@ -202,15 +124,15 @@ def logged_threads(directory, expected):
     for name, count in re.findall(r"\b(nthread(?:pair|tb)?)\s*=\s*(\d+)", text):
         mafft.setdefault(name, set()).add(int(count))
     require(expected in mafft.get("nthread", set()) | mafft.get("nthreadpair", set()),
-            "MAFFT log does not confirm the 96-thread request")
-    require(expected in mafft.get("nthreadtb", set()), "MAFFT log does not confirm 96 progressive-stage threads")
+            f"MAFFT log does not confirm the {expected}-thread request")
+    require(expected in mafft.get("nthreadtb", set()), f"MAFFT log does not confirm {expected} progressive-stage threads")
     texts = []
     for name in ("tree.log", "iqtree.stdout.log"):
         path = directory / name
         if path.is_file():
             texts.append(path.read_text(encoding="utf-8", errors="replace"))
     inference = {int(value) for value in re.findall(r"^Kernel:.*?\b(\d+)\s+threads?\b", "\n".join(texts), re.MULTILINE)}
-    require(inference == {expected}, f"IQ-TREE log does not confirm exactly 96 threads: {sorted(inference)}")
+    require(inference == {expected}, f"IQ-TREE log does not confirm exactly {expected} threads: {sorted(inference)}")
     return dict(mafft={key: sorted(values) for key, values in mafft.items()}, iqtree=sorted(inference))
 
 
@@ -219,7 +141,7 @@ def inference_details(directory, order):
     require(tree.endswith(";"), "Incomplete IQ-TREE Newick output")
     tips = re.findall(r"(?:\(|,)\s*([A-Za-z0-9_.-]+)\s*(?=:|,|\))", tree)
     require(len(tips) == len(order) and len(set(tips)) == len(order) and set(tips) == set(order),
-            "IQ-TREE tips differ from the 29 input sequence IDs")
+            "IQ-TREE tips differ from the input sequence IDs")
     report = (directory / "tree.iqtree").read_text(encoding="utf-8", errors="replace")
     seeds = set(re.findall(r"^Random seed number:\s*(\d+)", report, re.MULTILINE))
     if not seeds:
@@ -298,7 +220,8 @@ def run_command(command, directory, stdout, stderr, environment, append=False):
 
 def execute_branch(directory, branch, records, payload, signature, state, tools, tool_info,
                    config, mode, replay, execution, sources):
-    reverse_count = config["negative_target_strands"] if branch == "oriented" else 0
+    require(branch == "default", "Only the prepared entry orientation is supported")
+    reverse_count = 0
     if state is not None and state.get("status") == "completed":
         print(f"Validated cached {branch} phylogeny: {directory}", flush=True)
         return
@@ -321,7 +244,7 @@ def execute_branch(directory, branch, records, payload, signature, state, tools,
         if state["phase"] in {"prepared", "aligning"}:
             state["phase"] = "aligning"
             save_json(directory / "run.json", state)
-            print(f"Aligning {branch} with 96 requested threads", flush=True)
+            print(f"Aligning {branch} with {config['threads']} requested threads", flush=True)
             run_command([tools["mafft"], *commands["mafft"][1:]], directory, "aligned.fasta", "mafft.log", environment)
             metrics = alignment_metrics(directory, records, reverse_count)
             write_table(directory / "alignment_metrics.tsv", [dict(metric=key, value=value) for key, value in metrics.items()])
@@ -337,7 +260,7 @@ def execute_branch(directory, branch, records, payload, signature, state, tools,
                         f"Incomplete IQ-TREE output lacks its checkpoint: {directory}")
             state["phase"] = "inferring"
             save_json(directory / "run.json", state)
-            print(f"Inferring {branch} with IQ-TREE defaults and 96 threads", flush=True)
+            print(f"Inferring {branch} with IQ-TREE defaults and {config['threads']} threads", flush=True)
             run_command([tools["iqtree"], *commands["iqtree"][1:]], directory,
                         "iqtree.stdout.log", "iqtree.stderr.log", environment, append=resuming)
             state["phase"] = "inferred"
@@ -381,64 +304,17 @@ def workflow_lock(output):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def workflow(output, inputs, species, sources, replays, mode, config, tools, tool_info):
-    plans = []
-    for branch in BRANCHES:
-        records, replay = inputs[branch], replays[branch]
-        payload = fasta_bytes(records)
-        if replay and replay.get("input_sha256"):
-            require(payload_hash(payload) == replay["input_sha256"], f"Replay input differs: {branch}")
-        signature = payload_hash(json.dumps(dict(schema_version=1, branch=branch, mode=mode,
-                                     input_sha256=payload_hash(payload), source_sha256=sources,
-                                     config_sha256=sha256(CONFIG_PATH), script_sha256=sha256(Path(__file__)),
-                                     runtime_lock_sha256=sha256(ROOT / config["runtime_lock"]),
-                                     tool_sha256={name: info["executable_sha256"] for name, info in tool_info.items()},
-                                     replay=replay), sort_keys=True).encode("utf-8"))
-        directory = output / branch
-        state = cached_state(directory, signature, payload, records, replay,
-                             config["negative_target_strands"] if branch == "oriented" else 0, config)
-        plans.append((directory, branch, records, payload, signature, state, replay))
-    needs_compute = any(state is None or state.get("status") != "completed"
-                        for _, _, _, _, _, state, _ in plans)
-    execution = scheduler_context(config) if needs_compute else None
-    output.mkdir(parents=True, exist_ok=True)
-    species_path = output / "species.tsv"
-    if species_path.exists():
-        require(table(species_path) == [{key: str(value).lower() if isinstance(value, bool) else str(value)
-                                        for key, value in row.items()} for row in species],
-                "Existing species.tsv differs from current inputs")
-    else:
-        write_table(species_path, species)
-    for directory, branch, records, payload, signature, state, replay in plans:
-        execute_branch(directory, branch, records, payload, signature, state, tools, tool_info,
-                       config, mode, replay, execution, sources)
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=("default", "replay"), default="default")
     parser.add_argument("--mafft", help="MAFFT 7.526 executable")
     parser.add_argument("--iqtree", help="IQ-TREE 3.1.4 executable")
-    parser.add_argument("--check-tools", action="store_true", help="Check versions without scheduler requirements")
-    parser.add_argument("--output-root", type=Path, default=ROOT / "results/phylogeny")
-    parser.add_argument("--replay-manifest", type=Path, default=ROOT / "config/phylogeny_replay.json")
+    parser.add_argument("--check-tools", action="store_true", help="Check versions without computing")
     args = parser.parse_args()
     require(sys.version_info >= (3, 9), "Python 3.9 or newer is required")
-    config = configured()
-    tools, tool_info = resolve_tools(config, args.mafft, args.iqtree)
-    if args.check_tools:
-        for name, info in tool_info.items():
-            print(f"{name} {info['version']}: {info['executable']}")
-        return
-    inputs, species, sources = prepare_inputs(config)
-    manifest = args.replay_manifest if args.replay_manifest.is_absolute() else ROOT / args.replay_manifest
-    replays = replay_settings(manifest, args.mode)
-    output = args.output_root if args.output_root.is_absolute() else ROOT / args.output_root
-    output = output.resolve()
-    require(output != ROOT and ROOT / "data" not in (output, *output.parents),
-            "Output must not overwrite repository inputs")
-    with workflow_lock(output):
-        workflow(output, inputs, species, sources, replays, args.mode, config, tools, tool_info)
+    require(args.check_tools, "Use scripts/infer_entry.py --entry curated|auto for tree inference")
+    _, tool_info = resolve_tools(configured(), args.mafft, args.iqtree)
+    for name, info in tool_info.items():
+        print(f"{name} {info['version']}: {info['executable']}")
 
 
 if __name__ == "__main__":

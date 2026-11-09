@@ -5,6 +5,7 @@ import argparse
 import csv
 import gzip
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -107,11 +108,14 @@ def run_bedtools(binary, *arguments):
 
 
 def resolve_bedtools(requested):
-    candidate = requested or (ROOT / ".tools" / "bedtools" if (ROOT / ".tools" / "bedtools").is_file()
-                              else shutil.which("bedtools"))
+    local = ROOT / ".tools" / "bedtools"
+    candidate = requested or (str(local) if local.is_file() else shutil.which("bedtools"))
     require(candidate is not None, "BEDTools is missing; run make setup-bedtools or use --bedtools PATH")
-    binary = Path(candidate).resolve() if Path(candidate).exists() else shutil.which(str(candidate))
-    require(binary is not None, f"BEDTools executable not found: {candidate}")
+    binary = Path(candidate).expanduser()
+    if not binary.is_absolute():
+        binary = ROOT / binary if (ROOT / binary).is_file() else Path(shutil.which(str(binary)) or binary)
+    require(binary.is_file() and os.access(binary, os.X_OK), f"BEDTools executable not found: {candidate}")
+    binary = binary.resolve()
     version = run_bedtools(binary, "--version").strip()
     require(version == BEDTOOLS_VERSION, f"Expected {BEDTOOLS_VERSION}; found {version}")
     return binary, version

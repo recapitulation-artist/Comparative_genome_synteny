@@ -10,7 +10,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from extract_regions import Feature, annotation_indices
-from prepare_entry import coding_gene, load_inputs, match_target, select_neighbors
+from prepare_entry import (ROOT, coding_gene, load_inputs, match_target,
+                           protect_region_inputs, repository_input, select_neighbors)
 
 
 def gene(identifier, start, contig="contig", strand="+", **attrs):
@@ -100,7 +101,7 @@ class InputIsolationTests(unittest.TestCase):
                                annotations=directory / "missing-manual.tsv")
 
     def test_auto_metadata_does_not_require_legacy_sequence_ids_or_manual_input(self):
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(prefix=".prepare-test-", dir=ROOT) as temporary:
             args = self.create_inputs(Path(temporary), [dict(assembly_accession="assembly", organism_name="Species name")])
             metadata, manual, _, _, hashes = load_inputs(args)
             self.assertIsNone(manual)
@@ -108,7 +109,7 @@ class InputIsolationTests(unittest.TestCase):
             self.assertFalse(any("missing-manual" in row["file"] for row in hashes))
 
     def test_conflicting_metadata_for_same_assembly_is_rejected(self):
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(prefix=".prepare-test-", dir=ROOT) as temporary:
             args = self.create_inputs(Path(temporary), [dict(assembly_accession="assembly", organism_name="Species one"),
                                                       dict(assembly_accession="assembly", organism_name="Species two")])
             with self.assertRaisesRegex(ValueError, "Conflicting metadata"):
@@ -116,12 +117,13 @@ class InputIsolationTests(unittest.TestCase):
 
     def test_no_target_preserves_previous_outputs_and_reports_their_status(self):
         root = Path(__file__).resolve().parents[1]
-        binary = root / ".tools/bedtools"
-        if not binary.is_file():
-            self.skipTest("Locked BEDTools is not installed")
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(prefix=".prepare-test-", dir=ROOT) as temporary:
             directory = Path(temporary)
             args = self.create_inputs(directory, [dict(assembly_accession="assembly", organism_name="Species name")])
+            # No-target selection does not invoke extraction, only version lookup.
+            binary = directory / "bedtools-version"
+            binary.write_text("#!/bin/sh\n[ \"$1\" = --version ] || exit 2\nprintf 'bedtools v2.31.0\\n'\n")
+            binary.chmod(0o755)
             output = directory / "output"
             (output / "regions").mkdir(parents=True)
             previous_fasta, previous_bed = output / "extracted_sequences.fasta", output / "regions/old.bed"
@@ -130,6 +132,7 @@ class InputIsolationTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(root / "scripts/prepare_entry.py"), "--entry", "auto",
                                      "--genome-dir", str(args.genome_dir), "--genome-metadata", str(args.genome_metadata),
                                      "--annotations", str(args.annotations), "--bedtools", str(binary),
+                                     "--threads", "56",
                                      "--output", str(output)], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("previous scientific outputs", result.stderr)
@@ -137,9 +140,36 @@ class InputIsolationTests(unittest.TestCase):
             self.assertEqual(previous_fasta.read_text(), "previous FASTA\n")
             self.assertEqual(previous_bed.read_text(), "previous BED\n")
 
+    def test_worker_failure_does_not_publish_partial_scientific_outputs(self):
+        with tempfile.TemporaryDirectory(prefix=".prepare-test-", dir=ROOT) as temporary:
+            directory = Path(temporary)
+            args = self.create_inputs(directory, [dict(assembly_accession="assembly", organism_name="Species name")])
+            (args.genome_dir / "assembly/annotation.gff").write_text("invalid GFF\n")
+            binary = directory / "bedtools-version"
+            binary.write_text("#!/bin/sh\nprintf 'bedtools v2.31.0\\n'\n")
+            binary.chmod(0o755)
+            output = directory / "output"
+            (output / "regions").mkdir(parents=True)
+            originals = {"extracted_sequences.fasta": b"previous FASTA\n",
+                         "genes.tsv": b"previous genes\n", "regions/old.bed": b"previous BED\n"}
+            for name, content in originals.items():
+                (output / name).write_bytes(content)
+            result = subprocess.run([sys.executable, str(ROOT / "scripts/prepare_entry.py"),
+                                     "--entry", "auto", "--threads", "56",
+                                     "--genome-dir", str(args.genome_dir),
+                                     "--genome-metadata", str(args.genome_metadata),
+                                     "--bedtools", str(binary), "--output", str(output)],
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Invalid GFF", result.stderr)
+            for name, content in originals.items():
+                self.assertEqual((output / name).read_bytes(), content)
+            self.assertEqual({path.relative_to(output).as_posix() for path in output.rglob("*") if path.is_file()},
+                             set(originals))
+
     def test_output_cannot_overwrite_supplied_metadata(self):
         root = Path(__file__).resolve().parents[1]
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory(prefix=".prepare-test-", dir=ROOT) as temporary:
             directory = Path(temporary)
             args = self.create_inputs(directory, [dict(assembly_accession="assembly", organism_name="Species name")])
             metadata = directory / "genomes.tsv"
@@ -147,10 +177,43 @@ class InputIsolationTests(unittest.TestCase):
             original = metadata.read_bytes()
             result = subprocess.run([sys.executable, str(root / "scripts/prepare_entry.py"), "--entry", "auto",
                                      "--genome-dir", str(args.genome_dir), "--genome-metadata", str(metadata),
+                                     "--threads", "56",
                                      "--output", str(directory)], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("overwrite", result.stderr)
             self.assertEqual(metadata.read_bytes(), original)
+
+    def test_external_input_and_external_symlink_are_rejected(self):
+        with tempfile.TemporaryDirectory() as external, \
+                tempfile.TemporaryDirectory(prefix=".prepare-test-", dir=ROOT) as internal:
+            external_file = Path(external) / "metadata.tsv"
+            external_file.write_text("assembly_accession\torganism_name\n")
+            with self.assertRaisesRegex(ValueError, "inside this repository"):
+                repository_input(external_file)
+            link = Path(internal) / "metadata.tsv"
+            link.symlink_to(external_file)
+            with self.assertRaisesRegex(ValueError, "inside this repository"):
+                repository_input(link)
+
+    def test_auto_does_not_resolve_even_an_external_manual_path(self):
+        with tempfile.TemporaryDirectory(prefix=".prepare-test-", dir=ROOT) as temporary:
+            args = self.create_inputs(Path(temporary), [dict(assembly_accession="assembly", organism_name="Species name")])
+            args.annotations = Path("/not-in-this-repository/manual.tsv")
+            _, manual, _, _, hashes = load_inputs(args)
+            self.assertIsNone(manual)
+            self.assertFalse(any("manual.tsv" in row["file"] for row in hashes))
+
+    def test_region_publication_rejects_nested_source_inputs(self):
+        with tempfile.TemporaryDirectory(prefix=".prepare-test-", dir=ROOT) as temporary:
+            output = Path(temporary) / "output"
+            sources = [output / "regions/metadata.tsv", output / "regions/nested/manual.tsv",
+                       output / "regions/assembly/genome.fna", output / "regions/assembly/annotation.gff"]
+            for source in sources:
+                with self.subTest(source=source.name):
+                    with self.assertRaisesRegex(ValueError, "overwrite a supplied analysis input"):
+                        protect_region_inputs(output, [source])
+            # Similar directory names and ordinary bundled inputs remain valid.
+            protect_region_inputs(output, [output / "regions-other/metadata.tsv", ROOT / "data/genomes.tsv"])
 
 
 if __name__ == "__main__":

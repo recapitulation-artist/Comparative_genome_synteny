@@ -6,12 +6,15 @@ package_lock <- read.delim(file.path(project_root, "environment", "r_packages.lo
                           stringsAsFactors = FALSE, na.strings = "", check.names = FALSE)
 project_library <- file.path(project_root, ".r_library")
 Sys.setenv(TZ = "UTC")
-if (dir.exists(project_library)) .libPaths(c(project_library, .libPaths()))
+# Exclude user/site libraries so an unrelated personal package installation cannot
+# satisfy or override the repository lock.
+.libPaths(c(project_library, .Library), include.site = FALSE)
+Sys.setenv(R_LIBS_USER = project_library, R_LIBS_SITE = "")
 
 installed_version <- function(package) {
   path <- find.package(package, quiet = TRUE)
   if (!length(path)) return(NA_character_)
-  read.dcf(file.path(path, "DESCRIPTION"), fields = "Version")[1, 1]
+  unname(read.dcf(file.path(path, "DESCRIPTION"), fields = "Version")[1, 1])
 }
 
 check_environment <- function() {
@@ -44,7 +47,7 @@ restore_packages <- function() {
       if (downloaded) break
     }
     if (!downloaded) stop("Cannot download locked package: ", archive)
-    install.packages(dest, repos = NULL, type = "source", lib = project_library, quiet = TRUE)
+    install.packages(dest, repos = NULL, type = "source", lib = project_library, quiet = FALSE)
     unlink(dest)
     if (!identical(installed_version(p), version)) stop("Installation failed: ", p, " ", version)
   }

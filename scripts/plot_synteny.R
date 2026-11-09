@@ -8,15 +8,12 @@ base_dir <- project_root
 invisible(Sys.setlocale("LC_COLLATE", "C"))
 args <- commandArgs(trailingOnly = TRUE)
 entry <- "main"
-entry_explicit <- FALSE
 target_gene <- "Nramp"
 gene_palette <- "main-muted"
 link_palette <- "blue"
 custom_link_colors <- ""
 input_dir <- NULL
 phylogeny_dir <- NULL
-legacy_tree <- "reference"
-legacy_annotations <- "curated"
 usage <- paste("Usage: Rscript scripts/plot_synteny.R [--entry main|curated|auto]",
                "[--target-gene NAME] [--input-dir PATH] [--phylogeny-dir PATH]",
                "[--gene-palette main-muted|automatic|nature|cell|science]",
@@ -24,8 +21,7 @@ usage <- paste("Usage: Rscript scripts/plot_synteny.R [--entry main|curated|auto
 while (length(args)) {
   name <- sub("=.*$", "", args[1])
   if (!name %in% c("--entry", "--target-gene", "--input-dir", "--phylogeny-dir",
-                  "--gene-palette", "--link-palette", "--link-colors",
-                  "--tree-source", "--annotation-source")) stop(usage)
+                  "--gene-palette", "--link-palette", "--link-colors")) stop(usage)
   if (grepl("=", args[1], fixed = TRUE)) {
     value <- sub("^[^=]+=", "", args[1]); args <- args[-1]
   } else {
@@ -33,20 +29,13 @@ while (length(args)) {
     value <- args[2]; args <- args[-c(1, 2)]
   }
   if (!nzchar(value) && name != "--link-colors") stop(usage)
-  if (name == "--entry") { entry <- value; entry_explicit <- TRUE }
+  if (name == "--entry") entry <- value
   if (name == "--target-gene") target_gene <- value
   if (name == "--gene-palette") gene_palette <- value
   if (name == "--link-palette") link_palette <- value
   if (name == "--link-colors") custom_link_colors <- value
   if (name == "--input-dir") input_dir <- value
   if (name == "--phylogeny-dir") phylogeny_dir <- value
-  if (name == "--tree-source") legacy_tree <- value
-  if (name == "--annotation-source") legacy_annotations <- value
-}
-if (!legacy_tree %in% c("reference", "inferred") ||
-    !legacy_annotations %in% c("curated", "raw")) stop(usage)
-if (!entry_explicit) entry <- if (legacy_annotations == "raw") "auto" else {
-  if (legacy_tree == "inferred") "curated" else "main"
 }
 if (!entry %in% c("main", "curated", "auto")) stop(usage)
 main_entry <- entry == "main"
@@ -55,7 +44,8 @@ resolve_path <- function(path) if (startsWith(path, "/")) path else file.path(ba
 relative_path <- function(path) {
   path <- normalizePath(resolve_path(path), mustWork = TRUE)
   prefix <- paste0(normalizePath(base_dir), "/")
-  if (startsWith(path, prefix)) substring(path, nchar(prefix) + 1L) else path
+  if (!startsWith(path, prefix)) stop("Analysis inputs must be inside the repository: ", path)
+  substring(path, nchar(prefix) + 1L)
 }
 sha256 <- function(path) {
   value <- system2("sha256sum", shQuote(resolve_path(path)), stdout = TRUE)
