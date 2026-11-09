@@ -38,7 +38,3 @@ genus,Leclercia,#000000
 identity,>=90%,#A6A6A6
 identity,80-90%,#CECECE
 identity,70-80%,#EBEBEB
-raw_gene,Target Nramp,white
-raw_gene,Other protein-coding,#56B4E9
-raw_gene,RNA gene,#009E73
-raw_gene,Pseudogene,#999999

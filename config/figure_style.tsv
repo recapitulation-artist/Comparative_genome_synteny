@@ -8,3 +8,6 @@ species_size_pt	5.5
 sequence_size_pt	5.2
 line_width_pt	0.5
 gene_line_width_pt	0.3
+genus_dot_mm	2.2
+target_dot_mm	0.8
+main_saturation_factor	0.70

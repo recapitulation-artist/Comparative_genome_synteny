@@ -1,295 +1,100 @@
 # Cd Uptake Synteny
 
-A reproducible workflow from 29 bundled genome assemblies to uptake-gene
-neighborhoods, local BLAST comparisons, multiple-sequence alignments, region
-phylogenies and three synteny figures. Original project files remain unchanged.
-Analysis paths resolve relative to the repository root.
+Three reproducible entries generate synteny figures. Paths are relative to the
+repository root; original source files are preserved.
 
-## Three plotting entry points
+| Entry | Inputs | Output |
+| --- | --- | --- |
+| `plot-main` | Supplied sequence index, curated annotations, BLAST hits, reference tree and species metadata | `results/main/` |
+| `plot-curated` | Raw FASTA/GFF, curated gene annotations and genome metadata | `results/curated/` |
+| `plot-auto` | Raw FASTA/GFF, genome metadata and target gene name | `results/auto/` |
 
-The first two entries use manually curated `data/genes.tsv`, a byte-identical
-copy of `29gene2.txt` (579 annotations, including 29 uptake targets). The third
-entry derives 606 annotations directly from the original genome GFF files and
-infers its own tree. It does not read the manual annotations or supplied tree.
+## Setup
 
-| Make target | Annotations | Tree | Output directory |
-| --- | --- | --- | --- |
-| `plot-reference` | Curated | Supplied `data/phylogeny.nwk` | `results/reference/` |
-| `plot-inferred` | Curated | Newly inferred default-parameter tree | `results/inferred/` |
-| `plot-raw-inferred` | Original GFF | Independently inferred default-parameter tree | `results/raw/inferred/` |
-
-Tree topology determines row order and therefore adjacent BLAST links. The
-raw entry keeps all overlapping source genes and pseudogenes, with one arrow
-per locus. Its colours distinguish target Nramp (29), other protein-coding
-genes (458), RNA genes (103) and pseudogenes (16), without inferring orthology.
-Original products, gene names, locus tags, protein IDs, coordinates and clipping
-flags remain in the exported tables. Species labels come from
-`data/genomes.tsv`; unique sequence IDs remain visible.
-
-## Figure layout
-
-All entries share `config/figure_style.tsv` and the same renderer. The
-layout follows the [Nature figure specifications](https://research-figure-guide.nature.com/figures/preparing-figures-our-specifications/)
-and [sizing guidance](https://research-figure-guide.nature.com/figures/building-and-exporting-figure-panels/):
-183 x 170 mm, 5.2–6.5 pt black sans-serif lettering, 0.25–0.5 pt strokes,
-editable vector PDF and a 600 dpi PNG preview. Cairo may round the PDF media
-box down by less than 0.4 mm. Liberation Sans 2.1.5, an Arial-metric-compatible
-sans-serif family, is bundled under `environment/fonts/` with its SIL Open Font
-License and SHA256 checksums. The regular, italic and bold faces come from the
-[official release](https://github.com/liberationfonts/liberation-fonts/releases/tag/2.1.5).
-`config/fonts.conf` selects these files on every node. The verifier inspects
-the exported Cairo PDF for all three embedded TrueType faces and Unicode
-mappings; silent font substitution fails verification. When Poppler's
-`pdfinfo` and `pdffonts` are available, it also independently checks the
-page dimensions, single-page export and font embedding.
-
-The left tree is a cladogram: row order and topology are preserved, branch
-lengths and node supports are not displayed, and no biological root is inferred.
-The 22 mm tree area is separated from italic full species names and upright
-unique sequence IDs. Tree and gene rows share the same vertical coordinates.
-
-Genus markers use the Wong eight-colour palette and BLAST identity uses three
-grey levels. Curated gene-category colours retain the original annotation mapping;
-28 categories should not be interpreted using colour alone. The raw entry uses
-a compact four-category legend. Arrow keys and
-labels identify each category, and a small black dot marks the target Nramp
-transporter. The coordinate axis reports position within each extracted region
-in kb. Each entry also writes `caption.txt` and `figure_style.tsv` alongside its
-figures, with the style configuration included in the input-hash manifest.
-
-## Setup and execution
-
-The workflow requires Linux x86_64, Python >=3.9, Make and the locked tools.
-It uses BEDTools 2.31.0, BLAST+ 2.17.0+, MAFFT 7.526, IQ-TREE 3.1.4 and R 4.6.0.
-The IQ-TREE installation is the local stable release, not a beta build.
+Linux x86_64, Python >=3.9, Make and Slurm are required. Locked versions:
+BEDTools 2.31.0, BLAST+ 2.17.0+, MAFFT 7.526, stable IQ-TREE 3.1.4 and R 4.6.0.
 
 ```sh
-# Restore R when a matching installation is not available.
+# Restore R if a matching environment is unavailable.
 conda create --name cd_uptake_synteny --file environment/conda_linux_64.lock
 conda activate cd_uptake_synteny
 make setup
-
-# Submit all three entries and verification to node2.
-make submit MODE=default
-
-# Submit a plotting entry separately.
-make submit TARGET=plot-reference
-make submit TARGET=plot-inferred MODE=default
-make submit TARGET=plot-raw-inferred MODE=default
-
-# Run and verify only the original-GFF + inferred-tree entry.
-make submit TARGET=verify-raw MODE=default
-
-# Rebuild using the recorded first-run random seeds.
-make submit MODE=replay
 ```
 
-`make submit` requests the Slurm `normal` partition, node2, one task and 96 CPUs,
-waits for completion, and writes `results/slurm/<job_id>.log`. Parallel tool
-stages are configured for 96 threads; tree analyses run sequentially.
-Some operations are inherently serial or have fewer available parallel tasks.
-The workflow checks the node and allocation before calculation. Node2 SSH may
-be denied before a Slurm allocation is active; submission does not require SSH.
+Submission recognizes the existing local R environment. Executable overrides:
+`RSCRIPT`, `BEDTOOLS`, `BLASTN`, `MAKEBLASTDB`, `MAFFT`, `IQTREE`.
+Bundled data require no downloads.
 
-Inside that allocation, the Make targets can be run directly.
-`make run` generates all three
-figures; `make plot` remains an alias for `plot-reference`. `make extract` can
-be used separately without a cluster allocation, as can `make extract-raw`.
-
-`make setup-bedtools` verifies the official static binary against its SHA256.
-`make setup-blast` and `make setup-phylogeny` use matching local installations
-or restore exact Conda package locks under ignored `.tools/`. The phylogeny
-lock contains only the required IQ-TREE/MAFFT runtime dependencies.
-`make setup-r` installs the 23 locked R packages into `.r_library/`.
-Initial restoration needs internet access; bundled analysis data need none.
-
-The submission helper recognizes the existing local R environment. To select
-other matching tools, set `RSCRIPT`, `BEDTOOLS`, `BLASTN`, `MAKEBLASTDB`, `MAFFT`
-and `IQTREE`. Example: `make submit RSCRIPT=/path/to/Rscript`.
-`make check RSCRIPT=/path/to/Rscript` checks data hashes and software versions
-without submitting a job. Environment restoration on a separate machine must
-meet the virtual requirements recorded in each lock.
-
-## Extraction and BLAST
-
-`data/sequences.csv` defines the order and lengths of the 29 regions.
-The `Uptake-Gene` rows in the curated annotations identify each assembly and
-target protein. All 579 historical features are independently matched to GFF:
-476 CDS by protein accession and 103 RNA genes by locus tag.
-
-The reference has a historical one-base offset, retained for exact reproduction:
-
-```text
-BED_start = GFF_target_start_1based - legacy_target_start + 1
-BED_end   = BED_start + region_length
-```
-
-All matched features must agree on these boundaries. Each region starts one
-base after its lowest mapped feature start and ends at the greatest mapped
-feature end. All regions retain forward genomic orientation; no fixed flank
-size is imposed. BEDTools `getfasta -nameOnly` performs extraction, and
-`intersect` recovers all overlapping source genes and pseudogenes separately.
-The recovered neighbors are an audit output, not the plotting annotations.
-
-The resulting 29 sequences contain 567,757 bases and reproduce the reference
-FASTA bytes exactly. Source target products are annotated Nramp divalent-metal
-transporters; `Uptake-Gene` is the supplied analysis label.
-
-The independent raw route uses `data/region_manifest.tsv`, a frozen list of the
-same historical intervals and target accessions. These are fixed regions, not
-newly selected flanks. `scripts/extract_raw_regions.py` validates each target
-protein and parent locus against its source GFF, extracts the genome sequence
-with BEDTools, and intersects every original gene or pseudogene with the region.
-It reproduces the same FASTA without consulting curated annotations or reference
-FASTA. Raw local starts are true 1-based coordinates, including boundary
-clipping; the historical curated one-base offset is not carried into this entry.
-All raw outputs are separate under `results/raw/`.
-
-`config/blast.json` specifies the search parameters. Local `makeblastdb` builds
-one database from the extracted regions and `blastn -task megablast` searches
-those same regions with 96 threads. Other settings are word size 28, reward 1,
-penalty -2, gap-open/extension 0, DUST `20 64 1`, soft masking, both strands,
-E-value threshold 10 and `max_target_seqs=500`. Output retains only pairs with
-query rank less than subject rank, preserving directed endpoints and HSP order.
-
-The 4,513 raw HSPs yield 2,189 rows across all 406 unordered pairs. All 11 fields
-other than E-value match the historical table. The 994 nonzero E-values differ:
-original database/search statistics were not supplied. Current values remain
-unchanged, with detailed differences reported. Plotting uses identities and
-coordinates, so these statistical differences do not affect its links.
-
-## Alignment, trees and species
-
-The workflow converts full extracted FASTA headers to stable legacy `seq_id`
-values through `results/regions.tsv`, never by truncating strings. Repeated
-species names are metadata and do not replace unique tip identifiers.
-
-Two branches are generated under `results/phylogeny/`; the raw route independently
-generates the same branch types under `results/raw/phylogeny/`:
-
-- `default/`: original forward-genomic regions, used by the corresponding inferred entry.
-- `oriented/`: a diagnostic control reverse-complementing the 12 regions whose
-  GFF target strand is negative, so all targets have a common direction.
-
-Both use MAFFT's default FFT-NS-2 alignment and IQ-TREE's default model selection
-and tree search:
+## Run an entry
 
 ```sh
-mafft --thread 96 --threadtb 96 input.fasta > aligned.fasta
-iqtree3 -s aligned.fasta -T 96 --prefix tree
+# Main: plot supplied files directly; no raw genomes or reconstruction required.
+make submit TARGET=plot-main
+
+# Curated: extract, BLAST, align, infer a tree and plot using manual annotations.
+make submit TARGET=plot-curated
+
+# Automatic: discover every target copy and select its coding-gene neighborhood.
+make submit TARGET=plot-auto TARGET_GENE=Nramp NEIGHBORS=10
+
+# Build and verify all entries, or verify one entry.
+make submit TARGET=verify
+make submit TARGET=verify-auto TARGET_GENE=Nramp NEIGHBORS=10
+
+# Replay using this entry's recorded initial random seed.
+make submit TARGET=verify-curated MODE=replay
+make submit TARGET=verify-auto MODE=replay
 ```
 
-The thread options change resources only. No trimming, automatic direction
-adjustment, specified substitution model, outgroup or support replicates are
-added. The initial `MODE=default` run does not specify a seed. Its actual seeds,
-model choices, versions, commands, alignment statistics and hashes are recorded.
-The oriented tree is a diagnostic result and is not used for synteny plotting.
+`verify-main` and `verify-curated` also build and verify individual entries.
+Submission uses node2, one task and 96 CPUs; logs are in `results/slurm/`.
+BLAST, MAFFT and IQ-TREE use 96 threads. MAFFT and IQ-TREE retain default analysis
+settings. Actual seeds, models, commands, versions and hashes are recorded.
+Matching tree caches are reused; incompatible caches stop with an error.
+Use a fresh repository copy for a different target or neighborhood configuration.
+Replay outputs are kept under the entry's `phylogeny_replay/` directory.
 
-`MODE=replay` uses seeds and expected hashes in
-`config/phylogeny_replay.json` and writes trees under `results/phylogeny_replay/`,
-leaving the initial trees available for comparison. Its inferred synteny figure
-is written to the same `results/inferred/` entry-point directory. Completed
-matching runs are cached; an interrupted matching run can resume from its
-IQ-TREE checkpoint. To recompute independently,
-use a clean export or a new `--output-root` with `scripts/run_phylogeny.py`.
-Existing incompatible outputs cause an error instead of silent replacement.
-`make record-phylogeny` records the completed initial runs in the replay manifest;
-it refuses to replace a different recorded baseline. Tree byte differences during
-replay are reported alongside topology and branch-length comparisons.
+## Inputs and parameters
 
-For the raw route, `MODE=replay` uses the same recorded original-run seeds
-because the sequence inputs are identical; it does not replay the separate
-raw default run's random seeds. Trees are written under
-`results/raw/phylogeny_replay/` and the figure under `results/raw/inferred/`.
-Raw tree manifests record their own commands, actual seeds, software versions
-and input hashes. `results/raw/phylogeny/species.tsv` maps unique tree tip IDs
-to source species and strains; the synteny figure displays species labels.
+Main reads `data/sequences.csv`, `data/genes.tsv`,
+`data/reference_blast_hits.csv`, `data/phylogeny.nwk` and `data/genomes.tsv`.
 
-Species and strains are inherited from bundled assembly metadata: 13 species
-and eight genera. Assembly status and notes are retained, including the
-suppressed assembly GCF_003460245.1. Generated region trees are not described as
-species trees. The curated workflow's comparison reports additionally export
-annotated Newick files and PDF/PNG phylograms with species/strain labels.
+Curated and automatic accept `GENOME_DIR` and `GENOME_METADATA`; curated also
+accepts `GENE_ANNOTATIONS`:
 
-The original alignment, software settings, seed and run logs were not supplied.
-The reference has numeric node labels, while default inference does not request
-support tests. Exact historical file reproduction is therefore assessed rather
-than assumed. Reports compare unrooted splits/RF distance, shared splits,
-406 pairwise patristic distances and branch lengths. Raw historical labels >=95
-are reported without assigning an unknown support-test method.
-The reference's longest internal branch separates the 17 positive-target-strand
-regions from the 12 negative-strand regions. The diagnostic control explicitly
-checks whether this partition persists after direction normalization.
+```sh
+make submit TARGET=plot-auto TARGET_GENE=Nramp NEIGHBORS=10 \
+  GENOME_DIR=data/genomes GENOME_METADATA=data/genomes.tsv
+make submit TARGET=plot-curated GENE_ANNOTATIONS=data/genes.tsv
+```
 
-The initial default tree shares 24 of 26 nontrivial splits with the reference
-(RF = 4; normalized RF = 0.0769); it is not an exact reconstruction. All 18
-reference splits carrying raw numeric labels >=95 are retained. The two absent
-reference splits carry labels 64 and 86, with unknown support-test provenance.
-The oriented tree shares only five splits with either unnormalized tree
-(RF = 42) and removes the exact 17-positive/12-negative partition. These
-comparisons indicate strong orientation sensitivity, without establishing a
-species phylogeny or proving the cause of the historical topology. The two
-alignments have 41,061 and 35,844 columns, with fitted models TVM+F+G4 and
-GTR+F+I+R5, respectively; branch-length comparisons remain descriptive.
+Each assembly directory contains `genome.fna.gz` and `annotation.gff.gz`.
+Metadata requires `assembly_accession` and `organism_name`; curated additionally
+requires unique `seq_id` values matching its annotation table. Curated derives
+bounds from the manual annotations, preserving the historical one-base coordinate
+convention and reproducing the reference FASTA without reading it.
 
-## Outputs and verification
+Automatic matches `mntH` or products containing `Nramp` for the default target;
+other names match gene names or product tokens case-insensitively. Every target
+copy is retained with up to `NEIGHBORS` coding genes on each side. RNA and
+pseudogenes are excluded. Contig ends truncate the neighborhood without
+compensation. At least four regions are required for tree inference.
 
-| Location under `results/` | Content |
-| --- | --- |
-| `extracted_29_sequences.fasta` | Genome-derived, byte-identical reference reproduction |
-| `regions.tsv`, `neighbors.tsv`, `regions/` | Source coordinates, target mapping and BED intervals |
-| `extraction_*.tsv` | Mapping/reference validation, counts and versions |
-| `blast/` | Raw HSPs, commands, versions and historical comparison |
-| `reference/`, `inferred/` | Synteny PDF/PNG, caption, figure style, plot order, links, metrics and input hashes |
-| `raw/extracted_29_sequences.fasta`, `raw/regions.tsv` | Independent extraction from the fixed region manifest |
-| `raw/genes.tsv`, `raw/neighbors.tsv` | All 606 original annotations, local/genomic coordinates and clipping flags |
-| `raw/blast_hits.csv`, `raw/blast/` | Independent local BLAST results and audit |
-| `raw/phylogeny/` | Independent alignments, trees, species mapping and provenance |
-| `raw/inferred/` | Original-GFF synteny PDF/PNG and plotting audit tables |
-| `phylogeny/species.tsv` | Explicit ID, species, strain, assembly and strand mapping |
-| `phylogeny/{default,oriented}/` | Inputs, alignments, IQ-TREE outputs, annotated trees and run manifests |
-| `phylogeny/comparison.tsv`, `phylogeny/summary.md` | Historical-tree and direction-control comparisons |
-| `phylogeny_replay/` | Seeded replay trees and comparisons with the recorded initial trees |
-| `validation/clean_replay.json` | Observed clean-export hashes, topology comparisons and Slurm status |
-| `validation/raw_clean_entry.json` | Raw-entry verification with curated annotations and supplied tree absent |
+`prepare-curated` / `prepare-auto`, `blast-curated` / `blast-auto` and
+`phylogeny-curated` / `phylogeny-auto` run individual stages. Make targets run
+directly inside the allocation; preparation can also run locally. `make run`
+builds all figures. Earlier plotting target names remain aliases.
 
-`data/blast_hits.csv` is generated and ignored by Git. Raw inputs and references
-are tracked and covered by `data/checksums.sha256`; generated results and logs
-are ignored. Only full assembly FASTA and GFF are bundled per genome.
+## Figures
 
-Verification checks exact extraction bytes and all annotation mappings; BLAST
-geometry/order; alignment length, ID sets and ungapped-input equality; tree tip
-sets and species labels; plotting coordinates, annotation counts and image
-formats. The reference figure retains 135 links. Inferred figures derive
-their adjacent links from their own topology. Curated figures retain all 579
-manual annotations; the raw figure retains all 606 original annotations.
-Every figure contains 29 target markers. `verify-raw` independently regenerates
-the source-GFF extraction and compares all exported annotations and coordinates
-before checking the figure. `plotted_genes.tsv` records each drawn feature.
+Main retains its category mapping with saturation multiplied by 0.70.
+Other entries rank categories by count descending, then name descending in byte
+order, using 42 colors (seven hues, six tones each); overflow becomes gray `Other`.
+Automatic uses gene names, falling back to products; unknown annotations also
+become `Other`. Targets remain white with black dots. Genus circles are 2.2 mm.
 
-The original two-entry workflow passed on node2 with 96 CPUs, then passed again from a clean
-Git-index export containing no generated analysis inputs. The extracted FASTA,
-BLAST CSV, both alignments and the then-current synteny PNGs were byte-identical.
-The publication layout was subsequently rerendered and verified for both entry
-points, retaining the same row order, annotation counts and links. Both new
-PNGs were also reproduced byte-for-byte from clean copies of the plotting
-inputs, using the bundled fonts from an unrelated working directory. Both seeded
-tree replays retained all 26 initial splits (RF = 0). Their 406-distance RMSEs
-were 4.31e-9 (default) and 6.38e-6 (oriented); Newick bytes differed, so exact
-numerical tree reproduction is not claimed. Full evidence is retained under
-`results/validation/` and `results/phylogeny_replay/`.
-
-The raw entry passed on node2/96 CPUs with fresh default and oriented inference
-(job 15053), followed by all three plotting checks (job 15054). A separate copy
-without curated annotations, the supplied tree or reference FASTA passed
-`verify-raw` (job 15055). That copy reused the validated completed tree caches
-and regenerated extraction, original annotations, BLAST and plotting outputs;
-all 14 compared files, including the PNG, were byte-identical. Its retained
-historical BLAST table was used only to audit newly calculated hits. The raw
-PDF also passed independent font, text-boundary and overlap checks.
-
-The 15-package phylogeny runtime lock was also restored successfully into a fresh
-isolated prefix; both tools passed version and dynamic-library checks. PDF
-timestamps, fonts and floating-point results may vary across environments;
-versions, input hashes and topology/branch comparisons make these differences
-visible.
+Each output directory contains `synteny.pdf`, `synteny.png`, `caption.txt`,
+`gene_colors.tsv` and plotting audit tables. Curated and automatic also contain
+`legend.pdf` with full category names, extracted sequences, normalized annotations,
+BED intervals, BLAST results, alignments, trees, species tables and provenance.
+PDFs are vector graphics with embedded fonts; PNG previews use 600 dpi.

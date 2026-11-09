@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Align the extracted regions with local BLAST+ and validate historical geometry."""
+"""Compare extracted regions with local BLAST+ and retain native HSP geometry."""
 
 import argparse
 import csv
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -45,26 +46,46 @@ def resolve_tool(name, requested, version, environment):
     return path, actual
 
 
+def input_sources(input_dir):
+    if (input_dir / "sequences.csv").is_file():
+        return dict(sequences=input_dir / "sequences.csv", regions=input_dir / "regions.tsv",
+                    extracted_fasta=input_dir / "extracted_sequences.fasta")
+    require(input_dir in {(ROOT / "results").resolve(), (ROOT / "results/raw").resolve()},
+            f"Missing entry sequence index: {input_dir / 'sequences.csv'}")
+    return dict(sequences=ROOT / "data/sequences.csv", regions=input_dir / "regions.tsv",
+                extracted_fasta=input_dir / "extracted_29_sequences.fasta")
+
+
 def prepare_input(output, input_dir=ROOT / "results"):
-    sequences = table(ROOT / "data" / "sequences.csv", ",")
-    regions = table(input_dir / "regions.tsv")
-    records = list(fasta_records(input_dir / "extracted_29_sequences.fasta"))
+    sources = input_sources(input_dir)
+    sequences = table(sources["sequences"], ",")
+    regions = table(sources["regions"])
+    records = list(fasta_records(sources["extracted_fasta"]))
     order = [row["seq_id"] for row in sequences]
-    require(len(order) == 29 and len(set(order)) == 29, "Expected 29 unique sequence IDs")
+    require(len(order) >= 2 and len(set(order)) == len(order), "BLAST needs at least two unique sequence IDs")
+    require(all(re.fullmatch(r"[A-Za-z0-9_.-]+", name) for name in order),
+            "Sequence IDs must contain only letters, digits, underscores, dots and hyphens")
     require(len(records) == len(regions) == len(order), "Region/FASTA/sequence counts differ")
-    require([row["seq_id"] for row in regions] == order, "Region order differs from sequences.csv")
-    normalized, lookup = [], []
-    for rank, ((header, dna), region, sequence) in enumerate(zip(records, regions, sequences)):
-        require(header == region["fasta_header"], f"FASTA header differs for {sequence['seq_id']}")
-        require(len(dna) == int(region["length"]) == int(sequence["length"]),
+    region_index = {row["seq_id"]: row for row in regions}
+    fasta_index = dict(records)
+    require(len(region_index) == len(order) and set(region_index) == set(order), "Region IDs differ from sequences.csv")
+    require(len(fasta_index) == len(records) and len({row["fasta_header"] for row in regions}) == len(order)
+            and set(fasta_index) == {row["fasta_header"] for row in regions}, "FASTA headers differ from regions.tsv")
+    normalized, lookup, lengths = [], [], {}
+    for rank, sequence in enumerate(sequences):
+        region = region_index[sequence["seq_id"]]
+        header = region["fasta_header"]
+        dna = fasta_index[header].upper()
+        require(len(dna) > 0 and len(dna) == int(region["length"]) == int(sequence["length"]),
                 f"FASTA length differs for {sequence['seq_id']}")
-        require(set(dna.upper()) <= set("ACGTN"), f"Unexpected nucleotide: {header}")
+        require(set(dna) <= set("ACGTN"), f"Unexpected nucleotide: {header}")
         normalized.append((sequence["seq_id"], dna))
+        lengths[sequence["seq_id"]] = len(dna)
         lookup.append(dict(rank=rank, seq_id=sequence["seq_id"], fasta_header=header, length=len(dna),
                            sequence_sha256=hashlib.sha256(dna.encode("ascii")).hexdigest()))
     (output / "sequences.fasta").write_bytes(fasta_bytes(normalized))
     write_table(output / "sequence_lookup.tsv", lookup)
-    return {name: rank for rank, name in enumerate(order)}
+    return {name: rank for rank, name in enumerate(order)}, lengths, sources
 
 
 def decimal(value):
@@ -90,7 +111,20 @@ def sequence_id(value, ranks):
     return candidates[0]
 
 
-def convert_hits(raw_path, destination, ranks):
+def validate_hsp(fields, lengths):
+    values = [decimal(value) for value in fields[2:]]
+    identity, length, mismatches, gaps, start, end, start2, end2, evalue, bitscore = values
+    require(all(value == value.to_integral_value() for value in values[1:8]),
+            "BLAST lengths, mismatch counts and coordinates must be integers")
+    require(0 <= identity <= 100 and length > 0 and 0 <= mismatches <= length
+            and 0 <= gaps <= length and evalue >= 0 and bitscore >= 0, "Invalid BLAST HSP statistics")
+    for identifier, first, last in ((fields[0], start, end), (fields[1], start2, end2)):
+        require(1 <= min(first, last) <= max(first, last) <= lengths[identifier],
+                f"BLAST coordinates outside extracted sequence: {identifier}/{first}/{last}")
+        require(abs(last - first) + 1 <= length, "BLAST alignment length is shorter than its coordinate span")
+
+
+def convert_hits(raw_path, destination, ranks, lengths):
     rows, pairs = [], set()
     counts = dict(raw_hsps=0, retained_hsps=0, self_hsps_removed=0, reciprocal_hsps_removed=0)
     with raw_path.open(encoding="ascii") as handle:
@@ -99,6 +133,7 @@ def convert_hits(raw_path, destination, ranks):
             require(len(fields) == len(COLUMNS), "BLAST output must have exactly 12 columns")
             query, subject = [sequence_id(value, ranks) for value in fields[:2]]
             fields[:2] = [query, subject]
+            validate_hsp(fields, lengths)
             counts["raw_hsps"] += 1
             if ranks[query] == ranks[subject]:
                 counts["self_hsps_removed"] += 1
@@ -107,8 +142,6 @@ def convert_hits(raw_path, destination, ranks):
                 counts["reciprocal_hsps_removed"] += 1
                 continue
             # Keep native HSP order and strand-directed coordinates.
-            for value in fields[2:]:
-                decimal(value)
             fields[2] = compact(fields[2])
             fields[10] = "0" if decimal(fields[10]) == 0 else fields[10].lower()
             fields[11] = compact(fields[11])
@@ -166,20 +199,21 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--blastn", help="Local blastn executable")
     parser.add_argument("--makeblastdb", help="Local makeblastdb executable")
-    parser.add_argument("--output", type=Path, default=ROOT / "data" / "blast_hits.csv",
-                        help="Output CSV (default: data/blast_hits.csv)")
+    parser.add_argument("--output", type=Path, help="Output CSV (default: entry directory/blast_hits.csv)")
     parser.add_argument("--input-dir", type=Path, default=ROOT / "results",
                         help="Extracted FASTA and region table directory (default: results)")
-    parser.add_argument("--work-dir", type=Path, default=ROOT / "results/blast",
-                        help="BLAST work and audit directory (default: results/blast)")
+    parser.add_argument("--work-dir", type=Path, help="BLAST work and audit directory (default: entry directory/blast)")
+    parser.add_argument("--validate-reference", action=argparse.BooleanOptionalAction, default=None,
+                        help="Audit against historical HSPs (enabled only for the legacy results directory by default)")
     parser.add_argument("--check-tools", action="store_true", help="Check tool versions and exit")
     parser.add_argument("--threads", type=int, help="Resource override (default: locked configuration)")
     args = parser.parse_args()
     require(sys.version_info >= (3, 9), "Python 3.9 or newer is required")
     config = json.loads((ROOT / "config" / "blast.json").read_text(encoding="utf-8"))
     if args.threads is not None:
-        require(args.threads > 0, "Thread count must be positive")
+        require(args.threads == 96, "This workflow requires exactly 96 BLAST threads")
         config["num_threads"] = args.threads
+    require(config["num_threads"] == 96, "The BLAST configuration must request 96 threads")
     require(config["outfmt"] == "6 " + FIELDS, "Expected the standard 12-field BLAST output")
     environment = {**os.environ, **BLAST_ENV}
     blastn, blastn_version = resolve_tool("blastn", args.blastn, config["version"], environment)
@@ -188,11 +222,19 @@ def main():
         print(f"{blastn_version}; {db_version}")
         return
     resolve = lambda path: (path if path.is_absolute() else ROOT / path).resolve()
-    output, input_dir = resolve(args.work_dir), resolve(args.input_dir)
+    input_dir = resolve(args.input_dir)
+    legacy = input_dir == (ROOT / "results").resolve() and not (input_dir / "sequences.csv").is_file()
+    output = resolve(args.work_dir) if args.work_dir else input_dir / "blast"
+    destination = resolve(args.output) if args.output else (ROOT / "data/blast_hits.csv" if legacy
+                                                           else input_dir / "blast_hits.csv")
+    validate_historical = legacy if args.validate_reference is None else args.validate_reference
     require(output != ROOT and ROOT / "data" not in (output, *output.parents),
             "BLAST work directory must not overwrite repository inputs")
     output.mkdir(parents=True, exist_ok=True)
-    ranks = prepare_input(output, input_dir)
+    ranks, lengths, sources = prepare_input(output, input_dir)
+    require(destination not in {path.resolve() for path in sources.values()}, "BLAST output would overwrite an input")
+    sources.update(config=ROOT / "config/blast.json", script=Path(__file__).resolve())
+    input_hashes = {key: hashlib.sha256(path.read_bytes()).hexdigest() for key, path in sources.items()}
     options = []
     for name in BLAST_OPTIONS:
         value = config[name]
@@ -214,12 +256,29 @@ def main():
              "-blastdb_version", str(config["db_version"]), "-out", database], environment)
         run([blastn, "-query", output / "sequences.fasta", "-db", database, "-out", output / "all_hits.tsv",
              "-outfmt", config["outfmt"], *options], environment)
-    destination = args.output if args.output.is_absolute() else ROOT / args.output
-    rows, counts = convert_hits(output / "all_hits.tsv", destination, ranks)
-    validate_reference(rows, counts, output)
+    rows, counts = convert_hits(output / "all_hits.tsv", destination, ranks, lengths)
+    for key, path in sources.items():
+        require(hashlib.sha256(path.read_bytes()).hexdigest() == input_hashes[key], f"BLAST input changed during execution: {path}")
+    provenance = dict(schema_version=1, threads=config["num_threads"],
+                      inputs={key: dict(path=portable(path), sha256=input_hashes[key]) for key, path in sources.items()},
+                      tools={name: dict(path=str(path), version=version,
+                                        sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+                             for name, path, version in (("blastn", blastn, blastn_version),
+                                                         ("makeblastdb", makeblastdb, db_version))},
+                      historical_validation=validate_historical,
+                      output=dict(path=portable(destination), sha256=counts["generated_csv_sha256"]))
+    (output / "provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if validate_historical:
+        validate_reference(rows, counts, output)
+    else:
+        counts.update(input_sequences=len(ranks), coordinate_ranges_valid=True, historical_validation=False)
+        write_table(output / "metrics.tsv", [dict(metric=key, value=value) for key, value in counts.items()])
     print(f"Generated {len(rows)} HSPs across {counts['sequence_pairs']} sequence pairs: {destination}")
-    print("Historical alignment geometry and row order match in all 11 non-E-value columns.")
-    print(f"Actual BLAST E-values retained; {counts['reference_evalue_differences']} differ from the historical file.")
+    if validate_historical:
+        print("Historical alignment geometry and row order match in all 11 non-E-value columns.")
+        print(f"Actual BLAST E-values retained; {counts['reference_evalue_differences']} differ from the historical file.")
+    else:
+        print(f"Validated coordinates for {len(ranks)} input sequences; actual BLAST E-values retained.")
 
 
 if __name__ == "__main__":
