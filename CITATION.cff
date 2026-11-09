@@ -1,0 +1,29 @@
+cff-version: "1.2.0"
+message: "If you use this software, please cite it using these metadata."
+type: software
+title: "Enterobacteriaceae Cd Uptake Comparative Genome Synteny"
+authors:
+  - family-names: "Chen"
+    given-names: "Jiantao"
+    affiliation: "Guangzhou Medical University"
+    orcid: "https://orcid.org/0009-0009-3248-8980"
+repository-code: "https://github.com/recapitulation-artist/Comparative_genome_synteny"
+url: "https://github.com/recapitulation-artist/Comparative_genome_synteny"
+abstract: >-
+  A reproducible workflow for comparing cadmium-uptake gene neighborhoods in
+  Enterobacteriaceae. Three entries support reference-figure reproduction,
+  reconstruction with curated annotations, and automatic target discovery from
+  genome annotations, using BEDTools, BLAST, MAFFT and IQ-TREE. Bundled inputs
+  include FASTA/GFF data for 29 assemblies. Original project code, configuration,
+  tests and documentation are licensed under MIT. Bundled input data retain
+  their original source terms and are not relicensed under MIT. Bundled fonts
+  retain the SIL Open Font License.
+license: MIT
+keywords:
+  - "comparative genomics"
+  - "synteny"
+  - "cadmium uptake"
+  - "Enterobacteriaceae"
+  - "phylogenetics"
+  - "reproducibility"
+# Add version, date-released and doi when the first release is published.
