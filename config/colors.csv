@@ -38,3 +38,15 @@ genus,Leclercia,#000000
 identity,>=90%,#A6A6A6
 identity,80-90%,#CECECE
 identity,70-80%,#EBEBEB
+identity_blue,>=90%,#AECDE3
+identity_blue,80-90%,#D0E1EE
+identity_blue,70-80%,#EBF3F8
+identity_green,>=90%,#B4D5BD
+identity_green,80-90%,#D5E8DA
+identity_green,70-80%,#EEF6F0
+identity_purple,>=90%,#C7BDDE
+identity_purple,80-90%,#E0DAED
+identity_purple,70-80%,#F3F0F8
+identity_orange,>=90%,#E8C4AE
+identity_orange,80-90%,#F2DDCF
+identity_orange,70-80%,#FAF0E9

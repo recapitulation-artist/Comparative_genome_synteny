@@ -87,14 +87,57 @@ builds all figures. Earlier plotting target names remain aliases.
 
 ## Figures
 
-Main retains its category mapping with saturation multiplied by 0.70.
-Other entries rank categories by count descending, then name descending in byte
-order, using 42 colors (seven hues, six tones each); overflow becomes gray `Other`.
-Automatic uses gene names, falling back to products; unknown annotations also
-become `Other`. Targets remain white with black dots. Genus circles are 2.2 mm.
+All entries accept independent gene and homology-link palettes. Defaults are
+`GENE_PALETTE=main-muted` and `LINK_PALETTE=blue`.
+
+| `GENE_PALETTE` | 42-color palette |
+| --- | --- |
+| `main-muted` | Historical main colors at 0.70 saturation, extended with 16 darker tones |
+| `automatic` | Existing seven-hue, six-tone automatic palette |
+| `nature` | [NPG-inspired](https://nanx.me/ggsci/reference/pal_npg.html), extended with lighter tones |
+| `cell` | Project-defined soft Cell-inspired colors |
+| `science` | [AAAS-inspired](https://nanx.me/ggsci/reference/pal_aaas.html), extended with lighter tones |
+
+`main-muted` retains the historical main category mapping. Other main palettes
+rank its 26 ordinary categories by count descending, then name descending in
+byte order. Curated and automatic rank the same way and use the first 42 colors;
+overflow and unknown annotations become gray `Other`. Automatic uses gene names,
+falling back to products. Targets remain white with black dots; main `Unknown`
+remains black. Genus circles are 2.2 mm. Journal labels describe color inspiration.
+
+`LINK_PALETTE` accepts `blue`, `green`, `purple`, `orange` (three pale tones), or
+`original` (historical grays). `LINK_COLORS` overrides that preset with three
+distinct comma-separated `#RRGGBB` colors, ordered by BLAST identity:
+**>=90%, 80–<90%, 70–<80%**.
+
+```sh
+make submit TARGET=plot-main GENE_PALETTE=main-muted LINK_PALETTE=blue
+make submit TARGET=plot-curated GENE_PALETTE=nature LINK_PALETTE=green
+make submit TARGET=plot-auto GENE_PALETTE=automatic LINK_PALETTE=original
+make submit TARGET=plot-auto GENE_PALETTE=science \
+  LINK_COLORS="#AECDE3,#D0E1EE,#EBF3F8"
+```
+
+To redraw and verify existing results without extraction, BLAST or tree inference,
+run R directly (activate the R environment first):
+
+```sh
+for entry in main curated auto; do
+  Rscript --vanilla scripts/plot_synteny.R --entry "$entry" \
+    --gene-palette main-muted --link-palette blue
+  Rscript --vanilla scripts/verify_results.R --entry "$entry" \
+    --gene-palette main-muted --link-palette blue
+done
+```
+
+Both R commands also accept `--link-colors "#AECDE3,#D0E1EE,#EBF3F8"`,
+`--target-gene NAME`, and `--phylogeny-dir results/curated/phylogeny_replay`
+(or the corresponding automatic directory) when replay inputs are selected.
+Use the same palette options for plotting and verification.
 
 Each output directory contains `synteny.pdf`, `synteny.png`, `caption.txt`,
-`gene_colors.tsv` and plotting audit tables. Curated and automatic also contain
+`gene_colors.tsv`, `link_colors.tsv`, selected palettes in `figure_style.tsv`,
+and plotting audit tables. Curated and automatic also contain
 `legend.pdf` with full category names, extracted sequences, normalized annotations,
 BED intervals, BLAST results, alignments, trees, species tables and provenance.
 PDFs are vector graphics with embedded fonts; PNG previews use 600 dpi.

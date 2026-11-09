@@ -4,6 +4,7 @@
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -11,6 +12,18 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+GENE_PALETTES = ("main-muted", "automatic", "nature", "cell", "science")
+LINK_PALETTES = ("blue", "green", "purple", "orange", "original")
+
+
+def validate_link_colors(value):
+    if value == "":
+        return
+    colors = [color.strip() for color in value.split(",")]
+    if (len(colors) != 3 or any(re.fullmatch(r"#[0-9A-Fa-f]{6}", color) is None for color in colors)
+            or len({color.upper() for color in colors}) != 3):
+        raise ValueError("Provide three distinct comma-separated #RRGGBB link colors, "
+                         "ordered from high to low identity.")
 
 
 def check_node():
@@ -49,6 +62,10 @@ def main():
     parser.add_argument("--genome-dir", default="data/genomes")
     parser.add_argument("--genome-metadata", default="data/genomes.tsv")
     parser.add_argument("--annotations", default="data/genes.tsv")
+    parser.add_argument("--gene-palette", choices=GENE_PALETTES, default="main-muted")
+    parser.add_argument("--link-palette", choices=LINK_PALETTES, default="blue")
+    parser.add_argument("--link-colors", default="",
+                        help="Three distinct #RRGGBB colors (high, medium, low identity); overrides the preset")
     parser.add_argument("--rscript", default="Rscript")
     parser.add_argument("--bedtools", default=".tools/bedtools")
     for name in ("blastn", "makeblastdb", "mafft", "iqtree"):
@@ -60,6 +77,7 @@ def main():
         return
     if args.neighbors < 0 or not args.target_gene.strip():
         raise ValueError("Provide a nonempty target gene and a nonnegative neighbor count.")
+    validate_link_colors(args.link_colors)
     output = ROOT / "results/slurm"
     output.mkdir(parents=True, exist_ok=True)
     command = ["sbatch", "--parsable", "--wait", "--partition=normal", "--nodelist=node2",
@@ -67,7 +85,8 @@ def main():
                "--chdir=" + str(ROOT), "--output=" + str(output / "%j.log"),
                str(ROOT / "scripts/run_node2.sh"), args.target, args.mode, rscript_path(args.rscript),
                args.bedtools, args.blastn, args.makeblastdb, args.mafft, args.iqtree,
-               args.target_gene, str(args.neighbors), args.genome_dir, args.genome_metadata, args.annotations]
+               args.target_gene, str(args.neighbors), args.genome_dir, args.genome_metadata, args.annotations,
+               args.gene_palette, args.link_palette, args.link_colors]
     print("Submitting to node2 (96 CPUs). Logs: results/slurm/<job_id>.log", flush=True)
     process = subprocess.run(command, cwd=ROOT)
     if process.returncode:

@@ -12,4 +12,4 @@ srun --nodes=1 --ntasks=1 --cpus-per-task=96 --cpu-bind=threads \
   make --no-print-directory -j1 "$1" MODE="$2" RSCRIPT="$3" BEDTOOLS="$4" \
   BLASTN="$5" MAKEBLASTDB="$6" MAFFT="$7" IQTREE="$8" \
   TARGET_GENE="$9" NEIGHBORS="${10}" GENOME_DIR="${11}" GENOME_METADATA="${12}" \
-  GENE_ANNOTATIONS="${13}" THREADS=96
+  GENE_ANNOTATIONS="${13}" GENE_PALETTE="${14}" LINK_PALETTE="${15}" LINK_COLORS="${16}" THREADS=96

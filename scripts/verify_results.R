@@ -3,6 +3,7 @@
 script <- normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[1]))
 source(file.path(dirname(script), "environment.R"))
 check_environment()
+source(file.path(dirname(script), "palettes.R"))
 invisible(Sys.setlocale("LC_COLLATE", "C"))
 args <- commandArgs(trailingOnly = TRUE)
 entry <- "main"
@@ -10,25 +11,33 @@ entry_explicit <- FALSE
 target_gene <- "Nramp"
 input_dir <- NULL
 phylogeny_dir <- NULL
+gene_palette <- "main-muted"
+link_palette <- "blue"
+link_custom <- ""
 legacy_tree <- "reference"
 legacy_annotations <- "curated"
 usage <- paste("Usage: Rscript scripts/verify_results.R [--entry main|curated|auto]",
-               "[--target-gene NAME] [--input-dir PATH] [--phylogeny-dir PATH]")
+               "[--target-gene NAME] [--input-dir PATH] [--phylogeny-dir PATH]",
+               "[--gene-palette NAME] [--link-palette NAME] [--link-colors HEX,HEX,HEX]")
 while (length(args)) {
   name <- sub("=.*$", "", args[1])
   if (!name %in% c("--entry", "--target-gene", "--input-dir", "--phylogeny-dir",
-                  "--tree-source", "--annotation-source")) stop(usage)
+                  "--tree-source", "--annotation-source", "--gene-palette", "--link-palette",
+                  "--link-colors")) stop(usage)
   if (grepl("=", args[1], fixed = TRUE)) {
     value <- sub("^[^=]+=", "", args[1]); args <- args[-1]
   } else {
     if (length(args) < 2L) stop(usage)
     value <- args[2]; args <- args[-c(1, 2)]
   }
-  if (!nzchar(value)) stop(usage)
+  if (!nzchar(value) && name != "--link-colors") stop(usage)
   if (name == "--entry") { entry <- value; entry_explicit <- TRUE }
   if (name == "--target-gene") target_gene <- value
   if (name == "--input-dir") input_dir <- value
   if (name == "--phylogeny-dir") phylogeny_dir <- value
+  if (name == "--gene-palette") gene_palette <- value
+  if (name == "--link-palette") link_palette <- value
+  if (name == "--link-colors") link_custom <- value
   if (name == "--tree-source") legacy_tree <- value
   if (name == "--annotation-source") legacy_annotations <- value
 }
@@ -38,6 +47,7 @@ if (!entry_explicit) entry <- if (legacy_annotations == "raw") "auto" else {
   if (legacy_tree == "inferred") "curated" else "main"
 }
 if (!entry %in% c("main", "curated", "auto")) stop(usage)
+if (!gene_palette %in% gene_palette_names || !link_palette %in% link_palette_names) stop(usage)
 main_entry <- entry == "main"
 tree_source <- if (main_entry) "reference" else "inferred"
 resolve_path <- function(path) if (startsWith(path, "/")) path else file.path(project_root, path)
@@ -67,8 +77,8 @@ if (main_entry) {
 }
 metadata_paths <- c(tree = tree_path, annotations = annotation_path, sequences = sequence_path,
                     blast_hits = blast_path, genomes = genome_path, colors = "config/colors.csv",
-                    figure_style = "config/figure_style.tsv")
-if (!main_entry) metadata_paths <- c(metadata_paths, gene_palette = "config/gene_palette.csv")
+                    figure_style = "config/figure_style.tsv", gene_palette = "config/gene_palette.csv",
+                    palette_code = "scripts/palettes.R")
 metadata_paths <- vapply(metadata_paths, relative_path, character(1))
 sha256 <- function(path) {
   value <- system2("sha256sum", shQuote(resolve_path(path)), stdout = TRUE)
@@ -202,7 +212,8 @@ required_style <- c("width_mm", "height_mm", "png_dpi", "font_family", "text_siz
   "species_size_pt", "sequence_size_pt", "line_width_pt", "gene_line_width_pt",
   "genus_dot_mm", "target_dot_mm", "main_saturation_factor")
 derived_style <- c("entry", "tree_representation", "row_pitch_mm", "minimum_font_pt", "maximum_font_pt",
-                   "legend_columns", "legend_rows")
+                   "legend_columns", "legend_rows", "gene_palette", "gene_palette_capacity",
+                   "link_palette", "link_colors")
 stopifnot(identical(names(style_config), c("parameter", "value")),
           identical(names(style_report), c("parameter", "value")),
           !anyDuplicated(style_config$parameter), !anyDuplicated(style_report$parameter),
@@ -224,10 +235,83 @@ desaturate <- function(x) {
   hsv["s", ] <- hsv["s", ] * as.numeric(configured[["main_saturation_factor"]])
   grDevices::hsv(hsv["h", ], hsv["s", ], hsv["v", ])
 }
+palette_config <- read.csv(resolve_path("config/gene_palette.csv"), stringsAsFactors = FALSE)
+stopifnot(identical(names(palette_config), c("palette", "rank", "color")),
+          nrow(palette_config) == 42L * length(gene_palette_names),
+          setequal(palette_config$palette, gene_palette_names),
+          all(grepl("^#[0-9A-F]{6}$", palette_config$color)))
+for (preset in gene_palette_names) {
+  p <- palette_config[palette_config$palette == preset, , drop = FALSE]
+  stopifnot(identical(p$rank, seq_len(42L)), !anyDuplicated(p$color))
+}
+ordinary_main <- setdiff(names(color_group("gene")), c("Uptake-Gene", "Unknown"))
+main_anchor <- unname(hex(desaturate(color_group("gene")[ordinary_main])))
+stopifnot(length(main_anchor) == 26L)
+darkened <- grDevices::rgb(t(round(grDevices::col2rgb(main_anchor[seq_len(16L)]) * 0.85)),
+                           maxColorValue = 255)
+stopifnot(identical(palette_config$color[palette_config$palette == "main-muted"],
+                    c(main_anchor, darkened)))
+mix_white <- function(base, fractions) {
+  unname(head(unlist(lapply(fractions, function(fraction) {
+    grDevices::rgb(t(round(grDevices::col2rgb(base) * (1 - fraction) + 255 * fraction)),
+                  maxColorValue = 255)
+  })), 42L))
+}
+expected_palettes <- list(
+  automatic = c("#B84C4C", "#BE762F", "#B39B24", "#43845A", "#328D91", "#4B70A9", "#8056A1",
+    "#C46363", "#CA8949", "#C1AB40", "#5B966E", "#4DA0A3", "#6484B7", "#946DAC",
+    "#CD7B7B", "#D49C64", "#CDBA5F", "#73A783", "#68B2B5", "#7D99C5", "#A785BD",
+    "#D79393", "#DEAE7F", "#D9C97F", "#8CB998", "#84C4C6", "#96AED3", "#BA9DCD",
+    "#E1ABAB", "#E8C19A", "#E5D89F", "#A5CAAD", "#A0D6D7", "#AFC3E1", "#CDB6DD",
+    "#EBC3C3", "#F1D4B5", "#F0E8BF", "#BEDCC3", "#BDE8E8", "#C8D8EE", "#E0CEEB"),
+  nature = mix_white(c("#E64B35", "#4DBBD5", "#00A087", "#3C5488", "#F39B7F", "#8491B4",
+                      "#91D1C2", "#DC0000", "#7E6148", "#B09C85"), c(0, 0.15, 0.30, 0.45, 0.60)),
+  cell = mix_white(c("#3B6FB6", "#D8736F", "#4A9576", "#BD9A46", "#61A6B1", "#8C79B4", "#AD6C92"),
+                   c(0, 0.12, 0.24, 0.36, 0.48, 0.60)),
+  science = mix_white(c("#3B4992", "#EE0000", "#008B45", "#631879", "#008280", "#BB0021",
+                       "#5F559B", "#A20056", "#808180", "#1B1919"), c(0, 0.15, 0.30, 0.45, 0.60)))
+for (preset in names(expected_palettes)) stopifnot(identical(
+  palette_config$color[palette_config$palette == preset], expected_palettes[[preset]]))
+palette <- read_gene_palette(resolve_path("config/gene_palette.csv"), gene_palette)
+stopifnot(identical(palette, palette_config$color[palette_config$palette == gene_palette]))
+expected_links <- list(blue = c("#AECDE3", "#D0E1EE", "#EBF3F8"),
+  green = c("#B4D5BD", "#D5E8DA", "#EEF6F0"), purple = c("#C7BDDE", "#E0DAED", "#F3F0F8"),
+  orange = c("#E8C4AE", "#F2DDCF", "#FAF0E9"), original = c("#A6A6A6", "#CECECE", "#EBEBEB"))
+for (preset in names(expected_links)) {
+  group <- color_group(if (preset == "original") "identity" else paste0("identity_", preset))
+  stopifnot(identical(names(group), names(color_group("identity"))),
+            identical(unname(group), expected_links[[preset]]))
+}
+link_selection <- resolve_link_colors(colors, link_palette, link_custom)
+link_colors <- link_selection$colors
+expected_link <- if (nzchar(link_custom)) {
+  values <- toupper(trimws(strsplit(link_custom, ",", fixed = TRUE)[[1]]))
+  stopifnot(length(values) == 3L, all(grepl("^#[0-9A-F]{6}$", values)), !anyDuplicated(values))
+  setNames(values, names(color_group("identity")))
+} else color_group(if (link_palette == "original") "identity" else paste0("identity_", link_palette))
+stopifnot(identical(link_selection$palette, if (nzchar(link_custom)) "custom" else link_palette),
+          identical(link_colors, expected_link), length(link_colors) == 3L,
+          identical(names(link_colors), names(color_group("identity"))),
+          reported[["gene_palette"]] == gene_palette,
+          as.numeric(reported[["gene_palette_capacity"]]) == length(palette),
+          reported[["link_palette"]] == link_selection$palette,
+          reported[["link_colors"]] == paste(link_colors, collapse = ","))
+link_report <- read_tsv(output("link_colors.tsv"))
+stopifnot(identical(names(link_report), c("category", "color", "lower_bound", "upper_bound", "upper_inclusive")),
+          identical(link_report$category, names(link_colors)),
+          identical(link_report$color, unname(link_colors)),
+          identical(link_report$lower_bound, c(90L, 80L, 70L)),
+          identical(link_report$upper_bound, c(100L, 90L, 80L)),
+          identical(link_report$upper_inclusive, c(TRUE, FALSE, FALSE)))
 target_category <- if (main_entry) "Uptake-Gene" else paste("Target", target_gene)
 if (main_entry) {
   gene_colors <- hex(desaturate(color_group("gene")))
   names(gene_colors) <- names(color_group("gene"))
+  if (gene_palette != "main-muted") {
+    counts <- table(genes$note[genes$note %in% ordinary_main])
+    ranked <- names(counts)[order(as.integer(counts), names(counts), decreasing = TRUE, method = "radix")]
+    gene_colors[ranked] <- palette[seq_along(ranked)]
+  }
   categories <- names(gene_colors)
   assigned <- genes$note
   category_ranks <- seq_along(categories)
@@ -247,17 +331,11 @@ if (main_entry) {
     grepl("hypothetical|uncharacterized|uncharacterised", candidate, ignore.case = TRUE)
   candidate[unknown] <- "Other"
   counts <- table(candidate[!is_target & candidate != "Other"])
-  retained <- head(names(counts)[order(as.integer(counts), names(counts), decreasing = TRUE, method = "radix")], 42L)
-  palette <- read.csv(resolve_path("config/gene_palette.csv"), stringsAsFactors = FALSE)
-  stopifnot(identical(names(palette), c("rank", "hue", "tone", "color")), nrow(palette) == 42L,
-            identical(palette$rank, seq_len(42L)), !anyDuplicated(palette$color),
-            setequal(palette$hue, c("red", "orange", "yellow", "green", "cyan", "blue", "purple")),
-            all(table(palette$hue) == 6L), all(table(palette$tone) == 7L),
-            all(grepl("^#[0-9A-Fa-f]{6}$", palette$color)))
+  retained <- head(names(counts)[order(as.integer(counts), names(counts), decreasing = TRUE, method = "radix")], length(palette))
   categories <- c(target_category, retained, "Other")
-  gene_colors <- setNames(c("#FFFFFF", palette$color[seq_along(retained)], "#BDBDBD"), categories)
+  gene_colors <- setNames(c("#FFFFFF", palette[seq_along(retained)], "#BDBDBD"), categories)
   assigned <- ifelse(is_target, target_category, ifelse(candidate %in% retained, candidate, "Other"))
-  category_ranks <- c(0L, seq_along(retained), 43L)
+  category_ranks <- c(0L, seq_along(retained), length(palette) + 1L)
   labels <- c(target_category, sprintf("%02d %s", seq_along(retained), retained), "Other")
 }
 color_table <- read_tsv(output("gene_colors.tsv"))
@@ -330,7 +408,9 @@ stopifnot(all(is.finite(as.numeric(configured[setdiff(required_style, "font_fami
           isTRUE(all.equal(as.numeric(reported[["row_pitch_mm"]]), (height_mm - bottom_margin - 10) / nrow(rows))))
 caption <- paste(readLines(output("caption.txt"), warn = FALSE), collapse = " ")
 stopifnot(grepl(paste0("of ", nrow(seqs), " target-associated regions"), caption, fixed = TRUE),
-          grepl(if (main_entry) "supplied reference" else "newly inferred", caption, fixed = TRUE))
+          grepl(if (main_entry) "supplied reference" else "newly inferred", caption, fixed = TRUE),
+          grepl(gene_palette, caption, fixed = TRUE),
+          grepl(link_selection$palette, caption, fixed = TRUE))
 if (entry == "auto") stopifnot(grepl("original protein-coding", caption, fixed = TRUE), !grepl("manually curated", caption, fixed = TRUE))
 if (!main_entry) stopifnot(grepl("top 42", caption, fixed = TRUE), grepl("Other", caption, fixed = TRUE))
 pdf <- readBin(output("synteny.pdf"), "raw", n = 5)

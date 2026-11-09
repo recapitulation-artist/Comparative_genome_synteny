@@ -3,21 +3,28 @@
 script <- normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[1]))
 source(file.path(dirname(script), "environment.R"))
 check_environment()
+source(file.path(dirname(script), "palettes.R"))
 base_dir <- project_root
 invisible(Sys.setlocale("LC_COLLATE", "C"))
 args <- commandArgs(trailingOnly = TRUE)
 entry <- "main"
 entry_explicit <- FALSE
 target_gene <- "Nramp"
+gene_palette <- "main-muted"
+link_palette <- "blue"
+custom_link_colors <- ""
 input_dir <- NULL
 phylogeny_dir <- NULL
 legacy_tree <- "reference"
 legacy_annotations <- "curated"
 usage <- paste("Usage: Rscript scripts/plot_synteny.R [--entry main|curated|auto]",
-               "[--target-gene NAME] [--input-dir PATH] [--phylogeny-dir PATH]")
+               "[--target-gene NAME] [--input-dir PATH] [--phylogeny-dir PATH]",
+               "[--gene-palette main-muted|automatic|nature|cell|science]",
+               "[--link-palette blue|green|purple|orange|original] [--link-colors HEX,HEX,HEX]")
 while (length(args)) {
   name <- sub("=.*$", "", args[1])
   if (!name %in% c("--entry", "--target-gene", "--input-dir", "--phylogeny-dir",
+                  "--gene-palette", "--link-palette", "--link-colors",
                   "--tree-source", "--annotation-source")) stop(usage)
   if (grepl("=", args[1], fixed = TRUE)) {
     value <- sub("^[^=]+=", "", args[1]); args <- args[-1]
@@ -25,9 +32,12 @@ while (length(args)) {
     if (length(args) < 2L) stop(usage)
     value <- args[2]; args <- args[-c(1, 2)]
   }
-  if (!nzchar(value)) stop(usage)
+  if (!nzchar(value) && name != "--link-colors") stop(usage)
   if (name == "--entry") { entry <- value; entry_explicit <- TRUE }
   if (name == "--target-gene") target_gene <- value
+  if (name == "--gene-palette") gene_palette <- value
+  if (name == "--link-palette") link_palette <- value
+  if (name == "--link-colors") custom_link_colors <- value
   if (name == "--input-dir") input_dir <- value
   if (name == "--phylogeny-dir") phylogeny_dir <- value
   if (name == "--tree-source") legacy_tree <- value
@@ -75,8 +85,8 @@ if (main_entry) {
 }
 metadata_paths <- c(tree = tree_path, annotations = annotation_path, sequences = sequence_path,
                     blast_hits = blast_path, genomes = genome_path, colors = "config/colors.csv",
-                    figure_style = "config/figure_style.tsv")
-if (!main_entry) metadata_paths <- c(metadata_paths, gene_palette = "config/gene_palette.csv")
+                    figure_style = "config/figure_style.tsv", gene_palette = "config/gene_palette.csv",
+                    palette_code = "scripts/palettes.R")
 if (any(!file.exists(vapply(metadata_paths, resolve_path, character(1))))) {
   stop("Missing plotting input: ", paste(metadata_paths[!file.exists(
     vapply(metadata_paths, resolve_path, character(1)))], collapse = ", "))
@@ -143,7 +153,10 @@ desaturate <- function(x) {
   hsv["s", ] <- hsv["s", ] * number("main_saturation_factor")
   grDevices::hsv(hsv["h", ], hsv["s", ], hsv["v", ])
 }
-link_colors <- color_group("identity")
+palette <- read_gene_palette(resolve_path("config/gene_palette.csv"), gene_palette)
+palette_capacity <- length(palette)
+resolved_links <- resolve_link_colors(colors, link_palette, custom_link_colors)
+link_colors <- resolved_links$colors
 genus_colors <- color_group("genus")
 if (main_entry) genus_colors[] <- desaturate(genus_colors)
 # Extra genera receive deterministic colours without changing the historical mapping.
@@ -169,6 +182,15 @@ if (main_entry) {
   gene_colors <- color_group("gene")
   stopifnot(setequal(gene_data$note, names(gene_colors)))
   gene_colors[] <- hex_colors(desaturate(gene_colors))
+  ordinary <- setdiff(names(gene_colors), c("Uptake-Gene", "Unknown"))
+  stopifnot(identical(unname(gene_colors[ordinary]),
+    head(read_gene_palette(resolve_path("config/gene_palette.csv"), "main-muted"), length(ordinary))))
+  if (gene_palette != "main-muted") {
+    counts <- table(gene_data$note[gene_data$note %in% ordinary])
+    ranked <- names(counts)[order(as.integer(counts), names(counts), decreasing = TRUE, method = "radix")]
+    stopifnot(length(ranked) <= palette_capacity)
+    gene_colors[ranked] <- palette[seq_along(ranked)]
+  }
   gene_data$color_category <- gene_data$note
   labels <- names(gene_colors)
   labels[labels == "Uptake-Gene"] <- paste("Target", target_gene)
@@ -194,18 +216,15 @@ if (main_entry) {
   counts <- table(known)
   # Reverse bytewise name order breaks equal-count ties reproducibly.
   sorted_names <- sort(names(counts), decreasing = TRUE)
-  retained <- head(sorted_names[order(-as.integer(counts[sorted_names]), method = "radix")], 42L)
-  palette <- read.csv(resolve_path("config/gene_palette.csv"), stringsAsFactors = FALSE)
-  stopifnot(nrow(palette) == 42L, identical(palette$rank, seq_len(42L)),
-            !anyDuplicated(palette$color), all(grepl("^#[0-9A-Fa-f]{6}$", palette$color)))
+  retained <- head(sorted_names[order(-as.integer(counts[sorted_names]), method = "radix")], palette_capacity)
   gene_data$color_category <- ifelse(is_target, target_category,
                                     ifelse(candidate %in% retained, candidate, "Other"))
   categories <- c(target_category, retained, "Other")
-  gene_colors <- setNames(c("#FFFFFF", palette$color[seq_along(retained)], "#BDBDBD"), categories)
+  gene_colors <- setNames(c("#FFFFFF", palette[seq_along(retained)], "#BDBDBD"), categories)
   labels <- c(target_category, sprintf("%02d %s", seq_along(retained), retained), "Other")
   color_table <- data.frame(category = categories, label = labels,
     count = as.integer(table(factor(gene_data$color_category, levels = categories))),
-    rank = c(0L, seq_along(retained), 43L), color = unname(gene_colors), display_label = labels,
+    rank = c(0L, seq_along(retained), palette_capacity + 1L), color = unname(gene_colors), display_label = labels,
     stringsAsFactors = FALSE)
 }
 gene_data$color <- unname(gene_colors[gene_data$color_category])
@@ -435,8 +454,10 @@ if (!main_entry) {
 }
 style_table$value[style_table$parameter == "height_mm"] <- as.character(height_mm)
 extra_style <- data.frame(parameter = c("entry", "tree_representation", "row_pitch_mm", "minimum_font_pt",
-  "maximum_font_pt", "legend_columns", "legend_rows"),
-  value = c(entry, "cladogram", row_pitch, min(text_pt, species_pt, sequence_pt), 7, legend_columns, legend_rows))
+  "maximum_font_pt", "legend_columns", "legend_rows", "gene_palette", "gene_palette_capacity",
+  "link_palette", "link_colors"),
+  value = c(entry, "cladogram", row_pitch, min(text_pt, species_pt, sequence_pt), 7, legend_columns, legend_rows,
+    gene_palette, palette_capacity, resolved_links$palette, paste(unname(link_colors), collapse = ",")))
 write.table(rbind(style_table, extra_style), file.path(out_dir, "figure_style.tsv"),
             sep = "\t", quote = FALSE, row.names = FALSE)
 caption <- paste0("Gene neighbourhoods of ", n_seqs, " target-associated regions. Rows follow the ",
@@ -446,12 +467,17 @@ caption <- paste0("Gene neighbourhoods of ", n_seqs, " target-associated regions
   if (entry == "auto") "Arrows show selected original protein-coding gene annotations and strand direction. " else
     "Arrows show manually curated annotations and strand direction. ",
   "A black dot marks each target ", target_gene, " gene. ",
-  if (main_entry) "Gene and genus colours retain their historical mapping with reduced saturation. " else
+  if (main_entry) {
+    if (gene_palette == "main-muted") "Gene and genus colours retain their historical mapping with reduced saturation. " else
+      "Non-target gene colours are assigned by count, with descending names breaking ties; all curated categories are retained. "
+  } else
     paste0("Non-target categories are ranked by gene count, with descending names breaking ties. ",
-      "The top 42 categories receive distinct palette colours; remaining and unassigned genes are grey Other. ",
+      "The top ", palette_capacity, " categories receive distinct palette colours; remaining and unassigned genes are grey Other. ",
       "Numbered keys map to complete category names in legend.pdf and gene_colors.tsv. "),
-  "Ribbons connect adjacent regions with BLAST nucleotide identity of at least 70%; grey levels encode ",
-  "the indicated identity intervals. Coordinates are relative to each extracted region; original genomic ",
+  "Gene palette: ", gene_palette, ". ",
+  "Ribbons connect adjacent regions with BLAST nucleotide identity of at least 70%; ribbon colours encode ",
+  "the indicated identity intervals (link palette: ", resolved_links$palette, "). ",
+  "Coordinates are relative to each extracted region; original genomic ",
   "orientations are retained. Species annotations come from assembly metadata.")
 writeLines(caption, file.path(out_dir, "caption.txt"))
 row_order <- leaf_pos[order(leaf_pos$y_pos, decreasing = TRUE), c("seq_id", "organisms", "organism_name", "y_pos")]
@@ -467,6 +493,10 @@ plotted_genes$color_category <- gene_data$color_category
 plotted_genes$color <- gene_data$color
 write.table(plotted_genes, file.path(out_dir, "plotted_genes.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
 write.table(color_table, file.path(out_dir, "gene_colors.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(data.frame(category = names(link_colors), color = unname(link_colors),
+  lower_bound = c(90L, 80L, 70L), upper_bound = c(100L, 90L, 80L),
+  upper_inclusive = c(TRUE, FALSE, FALSE)), file.path(out_dir, "link_colors.tsv"),
+  sep = "\t", quote = FALSE, row.names = FALSE)
 write.table(data.frame(category = names(genus_colors), color = unname(genus_colors),
   count = as.integer(table(factor(leaf_pos$organisms, levels = names(genus_colors)))),
   diameter_mm = number("genus_dot_mm")), file.path(out_dir, "genus_colors.tsv"),
