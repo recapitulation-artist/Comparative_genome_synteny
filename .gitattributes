@@ -1,0 +1,2 @@
+# The source genome index retains empty final TSV fields.
+data/genomes.tsv whitespace=-blank-at-eol

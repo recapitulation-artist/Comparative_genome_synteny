@@ -1,0 +1,6 @@
+{
+  "version": "2.31.0",
+  "platform": "linux-x86_64",
+  "url": "https://github.com/arq5x/bedtools2/releases/download/v2.31.0/bedtools.static",
+  "sha256": "3f9fad3cc3cf48d3471b272c0ef5525db14f00790ed938e933ce3cf6f9111623"
+}

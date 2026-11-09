@@ -1,13 +1,23 @@
 # Cd Uptake Synteny
 
-Reproduce an aligned phylogenetic topology and gene-synteny figure for 29
-sequences. The workflow validates inputs and the R environment, renders the
-figure, and checks the results against the bundled dataset.
+Extract 29 uptake-gene neighborhoods from the bundled full genome assemblies
+and GFF annotations with BEDTools, reproduce the supplied reference FASTA exactly,
+and render the original phylogeny and synteny figure from the prepared plot inputs.
+All paths resolve within this repository; original project files are untouched.
 
 ## Run
 
-Linux x86_64 with glibc >=2.28 and <3.0 is required for the Conda lock.
-Conda and `sha256sum` must be available. Initial setup requires internet access.
+Extraction requires Linux x86_64, Python >=3.9, Make, curl and sha256sum.
+The first command downloads the official BEDTools 2.31.0 static binary into
+`.tools/`, checking its locked SHA256 before execution. No system installation
+is performed. Subsequent extraction runs work offline.
+
+```sh
+make setup-bedtools
+make extract
+```
+
+To restore the R environment and run both extraction and plotting:
 
 ```sh
 conda create --name cd_uptake_synteny --file environment/conda_linux_64.lock
@@ -16,55 +26,96 @@ make setup
 make verify
 ```
 
-`make setup` installs exact CRAN package versions into `.r_library/`, using
-current or archived source releases in dependency order. It does not modify
-the user R library. The Conda lock includes R 4.6.0, compilers, Cairo and fonts;
-`environment/r_packages.lock.tsv` pins all 23 non-base R dependencies.
+The Conda lock requires Linux x86_64 with glibc >=2.28 and <3.0. It supplies
+R 4.6.0, compilers, Cairo and fonts. `make setup-r` installs 23 exact CRAN package
+versions into `.r_library/`. Initial environment restoration requires internet
+access. Python >=3.9 must also be available; extraction uses only its standard
+library and records the actual Python version.
 
-With an existing environment matching the locks, `make verify` can run
-directly. Override the executable with `make verify RSCRIPT=/path/to/Rscript`.
-Use `make check` to validate inputs and dependencies, or `make run` to render.
-All Make targets invoke R with `--vanilla` to skip user startup files.
+With an existing matching R environment, use
+`make verify RSCRIPT=/path/to/Rscript`. `make plot` renders only the figure;
+`make check` checks all input hashes and software locks. `PYTHON` and `BEDTOOLS`
+can also be overridden; the BEDTools artifact must match the binary lock.
 
-## Files
+## Extraction method
+
+`data/sequences.csv` defines region order and lengths. The 29 `Uptake-Gene` rows
+in `data/genes.tsv` identify the assembly and target protein. Each target must
+match exactly one GFF CDS by `protein_id`. All 579 legacy annotations are also
+matched independently: 476 CDS by protein accession and 103 RNA genes by locus
+tag. Their contigs, strands and coordinate offsets must agree.
+
+The supplied reference has a historical coordinate offset on both strands.
+To reproduce it, the workflow uses:
 
 ```text
-config/       Fixed colors and expected dataset metrics
-data/         Standardized input copies, checksums and schemas
-environment/  Conda runtime lock and R package lock
-scripts/      Environment setup, plotting and result verification
-results/      Generated figures, tables and session information (Git-ignored)
+BED_start = GFF_target_start_1based - legacy_target_start + 1
+BED_end   = BED_start + region_length
 ```
 
-All entry points resolve paths relative to the repository. No original file or
-external project directory is needed. Input provenance is documented in
-[`data/README.md`](data/README.md). The plotting script is a cleaned adaptation
-of the 29-sequence section of `gggenome_xishou.R`.
+These boundaries are independently checked against every mapped legacy feature.
+Each reference region begins one nucleotide after the lowest genomic feature
+start and ends at the greatest feature end. Thus its first annotated feature
+is clipped by one nucleotide. This behavior is retained for exact reproduction;
+new coordinate tables use standard conventions and record clipping explicitly.
+All 29 regions retain the forward genomic orientation, including those with a
+reverse-strand target. No fixed flank distance is applied.
 
-## Outputs and methods
+[BEDTools getfasta](https://bedtools.readthedocs.io/en/stable/content/tools/getfasta.html)
+extracts each genome-derived interval. The reference FASTA is read only after
+extraction for validation.
+[BEDTools intersect](https://bedtools.readthedocs.io/en/stable/content/tools/intersect.html)
+recovers every overlapping GFF gene or pseudogene on either strand, including
+RNA genes. Neighbor tables retain full genomic coordinates and clipped local
+coordinates. Source annotations identify the targets as Nramp divalent-metal
+transporters; `Uptake-Gene` is the supplied analysis label.
 
-- `results/synteny.pdf`: one-page vector figure, 28 by 30 inches.
-- `results/synteny.png`: 4,200 by 4,500 pixels at 150 dpi.
-- `results/sequence_order.csv`: top-to-bottom sequence order and annotation counts.
-- `results/plotted_blast_hits.csv`: displayed hits with original directed coordinates.
-- `results/metrics.tsv`: dataset and filtering counts.
-- `results/session_info.txt`: actual R and package environment.
+## Files and outputs
 
-The supplied topology is ladderized without branch lengths or an inferred
-biological root. Tree tips and gene tracks share the same vertical coordinates.
-Only hits between adjacent tracks with identity >=70% are drawn, preserving
-reverse endpoints to show inversions. Identity bins are >=90%, 80 to <90%, and
-70 to <80%. Gene arrows follow annotation strands; red stars mark `Uptake-Gene`.
-Colors and legend order are fixed in `config/colors.csv`.
+```text
+config/       Plot colors and expected plot metrics
+data/         Prepared plot inputs, reference FASTA, genome index and checksums
+data/genomes/ Full genome FASTA and GFF files, losslessly compressed
+environment/  BEDTools binary lock, Conda runtime lock and R package lock
+scripts/      Setup, extraction, plotting and verification
+results/      Generated outputs, ignored by Git
+```
+
+Input provenance and coordinate conventions are in [`data/README.md`](data/README.md).
+Only the two necessary genome files are included per assembly; download logs and
+redundant genome formats are omitted. Assembly status and biological notes are
+retained in `data/genomes.tsv`, including the suppressed assembly GCF_003460245.1.
+
+| Output in `results/` | Content |
+| --- | --- |
+| `extracted_29_sequences.fasta` | Genome-derived reproduction of the original FASTA |
+| `regions.tsv` | Region boundaries, target positions and source annotations |
+| `neighbors.tsv` | All overlapping genes, source coordinates and clipping flags |
+| `regions/*.bed` | Reusable region and gene BED intervals per assembly |
+| `extraction_validation.tsv` | Per-record reference comparisons and sequence hashes |
+| `extraction_metrics.tsv`, `extraction_versions.tsv` | Extraction counts, FASTA hash and runtime versions |
+| `synteny.pdf`, `synteny.png` | Vector figure and 4,200 by 4,500 pixel raster figure |
+| `sequence_order.csv`, `plotted_blast_hits.csv`, `metrics.tsv` | Plot order, displayed alignments and plot counts |
+| `session_info.txt` | Actual R package environment |
+
+The plot uses the supplied historical annotation, BLAST and tree inputs. It
+ladderizes the topology without branch lengths or an inferred biological root.
+Only hits between adjacent tracks with identity >=70% are drawn. Gene arrows
+follow the supplied strands; red stars mark the uptake genes. Alignment, BLAST
+execution and tree inference are outside this workflow.
 
 ## Verification
 
-`make verify` checks input SHA256 hashes, every locked package version, identifier
-and coordinate consistency, expected metrics, selected BLAST coordinates, all
-28 adjacent pairs, PDF signature, and PNG signature and dimensions. Expected
-results include 579 genes, 29 uptake markers and 135 displayed BLAST hits.
+`make extract` checks input hashes, the locked BEDTools binary, all annotation
+mappings, region boundaries and reference equality. It requires identical FASTA
+headers, order, lengths, nucleotide sequences and complete file bytes.
+`make verify` additionally checks the R package lock, plot coordinates and
+expected counts: 29 sequences, 579 prepared annotations, 29 uptake markers and
+606 overlapping genomic genes, plus 135 displayed BLAST hits. PDF and PNG
+formats and PNG dimensions are checked.
+Fonts and PDF timestamps may vary across machines.
 
-The workflow has been tested with the matching local R environment and in a
-separate copy of the tracked repository. Fresh network restoration has not
-been tested. Fonts and PDF timestamps can vary across machines; file hashes of
-rendered figures are not used as a reproducibility criterion.
+Verified with the matching local environments and a separate export of
+Git-tracked files; all 64 extraction outputs were byte-identical. Deliberate
+coordinate, strand, duplicate-annotation and reference errors were rejected.
+Fresh network restoration of the R environment has not been tested.

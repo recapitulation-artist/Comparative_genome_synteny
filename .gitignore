@@ -1,5 +1,7 @@
 /.r_library/
+/.tools/
 /results/
+__pycache__/
 /.Rhistory
 /.RData
 /Rplots.pdf
