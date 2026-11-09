@@ -18,7 +18,7 @@ def check_node():
             or os.environ.get("SLURM_CPUS_PER_TASK") != "96"
             or os.environ.get("SLURM_NTASKS", "1") != "1"):
         raise ValueError("Run inside a node2 Slurm allocation with one task and 96 CPUs; "
-                         "use make submit TARGET=verify (or plot-reference / plot-inferred).")
+                         "use make submit TARGET=verify, plot-reference, plot-inferred or verify-raw.")
 
 
 def rscript_path(value):
@@ -38,8 +38,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-node", action="store_true")
     parser.add_argument("--mode", choices=("default", "replay"), default="default")
-    parser.add_argument("--target", choices=("verify", "run", "phylogeny", "plot-reference", "plot-inferred"),
+    parser.add_argument("--target", choices=("verify", "run", "phylogeny", "plot-reference", "plot-inferred",
+                                           "extract-raw", "blast-raw", "phylogeny-raw", "plot-raw-inferred", "verify-raw"),
                         default="verify")
+    parser.add_argument("--raw-phylogeny-dir", help="Raw tree output directory (default: selected by --mode)")
     parser.add_argument("--rscript", default="Rscript")
     parser.add_argument("--bedtools", default=".tools/bedtools")
     for name in ("blastn", "makeblastdb", "mafft", "iqtree"):
@@ -51,13 +53,15 @@ def main():
         return
     if args.mode == "replay" and not (ROOT / "config/phylogeny_replay.json").is_file():
         raise ValueError("Recorded seeds are missing; complete the initial MODE=default run first.")
+    raw_phylogeny_dir = args.raw_phylogeny_dir or (
+        "results/raw/phylogeny_replay" if args.mode == "replay" else "results/raw/phylogeny")
     output = ROOT / "results/slurm"
     output.mkdir(parents=True, exist_ok=True)
     command = ["sbatch", "--parsable", "--wait", "--partition=normal", "--nodelist=node2",
                "--nodes=1", "--ntasks=1", "--cpus-per-task=96", "--job-name=cd-uptake-synteny",
                "--chdir=" + str(ROOT), "--output=" + str(output / "%j.log"),
                str(ROOT / "scripts/run_node2.sh"), args.target, args.mode, rscript_path(args.rscript),
-               args.bedtools, args.blastn, args.makeblastdb, args.mafft, args.iqtree]
+               args.bedtools, args.blastn, args.makeblastdb, args.mafft, args.iqtree, raw_phylogeny_dir]
     print("Submitting to node2 (96 CPUs). Logs: results/slurm/<job_id>.log", flush=True)
     process = subprocess.run(command, cwd=ROOT)
     if process.returncode:

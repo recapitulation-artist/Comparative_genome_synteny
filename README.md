@@ -2,28 +2,33 @@
 
 A reproducible workflow from 29 bundled genome assemblies to uptake-gene
 neighborhoods, local BLAST comparisons, multiple-sequence alignments, region
-phylogenies and two synteny figures. Original project files remain unchanged.
+phylogenies and three synteny figures. Original project files remain unchanged.
 Analysis paths resolve relative to the repository root.
 
-## Two plotting entry points
+## Three plotting entry points
 
-Both figures use **the same manually curated `data/genes.tsv`**, a byte-identical
-copy of `29gene2.txt` (579 annotations, including 29 uptake targets). They also
-use the same extracted regions and newly calculated BLAST hits.
+The first two entries use manually curated `data/genes.tsv`, a byte-identical
+copy of `29gene2.txt` (579 annotations, including 29 uptake targets). The third
+entry derives 606 annotations directly from the original genome GFF files and
+infers its own tree. It does not read the manual annotations or supplied tree.
 
-| Make target | Tree | Output directory |
-| --- | --- | --- |
-| `plot-reference` | Supplied `data/phylogeny.nwk` | `results/reference/` |
-| `plot-inferred` | Newly inferred default-parameter tree | `results/inferred/` |
+| Make target | Annotations | Tree | Output directory |
+| --- | --- | --- | --- |
+| `plot-reference` | Curated | Supplied `data/phylogeny.nwk` | `results/reference/` |
+| `plot-inferred` | Curated | Newly inferred default-parameter tree | `results/inferred/` |
+| `plot-raw-inferred` | Original GFF | Independently inferred default-parameter tree | `results/raw/inferred/` |
 
 Tree topology determines row order and therefore adjacent BLAST links. The
-plot does not substitute automatically recovered GFF neighbors for the curated
-annotations. Species labels come from `data/genomes.tsv`; unique sequence IDs
-remain visible. Colors retain the eight recorded genera.
+raw entry keeps all overlapping source genes and pseudogenes, with one arrow
+per locus. Its colours distinguish target Nramp (29), other protein-coding
+genes (458), RNA genes (103) and pseudogenes (16), without inferring orthology.
+Original products, gene names, locus tags, protein IDs, coordinates and clipping
+flags remain in the exported tables. Species labels come from
+`data/genomes.tsv`; unique sequence IDs remain visible.
 
 ## Figure layout
 
-Both entry points share `config/figure_style.tsv` and the same renderer. The
+All entries share `config/figure_style.tsv` and the same renderer. The
 layout follows the [Nature figure specifications](https://research-figure-guide.nature.com/figures/preparing-figures-our-specifications/)
 and [sizing guidance](https://research-figure-guide.nature.com/figures/building-and-exporting-figure-panels/):
 183 x 170 mm, 5.2–6.5 pt black sans-serif lettering, 0.25–0.5 pt strokes,
@@ -44,8 +49,9 @@ The 22 mm tree area is separated from italic full species names and upright
 unique sequence IDs. Tree and gene rows share the same vertical coordinates.
 
 Genus markers use the Wong eight-colour palette and BLAST identity uses three
-grey levels. Gene-category colours retain the original annotation mapping;
-28 categories should not be interpreted using colour alone. Arrow keys and
+grey levels. Curated gene-category colours retain the original annotation mapping;
+28 categories should not be interpreted using colour alone. The raw entry uses
+a compact four-category legend. Arrow keys and
 labels identify each category, and a small black dot marks the target Nramp
 transporter. The coordinate axis reports position within each extracted region
 in kb. Each entry also writes `caption.txt` and `figure_style.tsv` alongside its
@@ -63,12 +69,16 @@ conda create --name cd_uptake_synteny --file environment/conda_linux_64.lock
 conda activate cd_uptake_synteny
 make setup
 
-# Submit both plot entry points and all verification to node2.
+# Submit all three entries and verification to node2.
 make submit MODE=default
 
-# Submit either plot entry point separately.
+# Submit a plotting entry separately.
 make submit TARGET=plot-reference
 make submit TARGET=plot-inferred MODE=default
+make submit TARGET=plot-raw-inferred MODE=default
+
+# Run and verify only the original-GFF + inferred-tree entry.
+make submit TARGET=verify-raw MODE=default
 
 # Rebuild using the recorded first-run random seeds.
 make submit MODE=replay
@@ -76,15 +86,15 @@ make submit MODE=replay
 
 `make submit` requests the Slurm `normal` partition, node2, one task and 96 CPUs,
 waits for completion, and writes `results/slurm/<job_id>.log`. Parallel tool
-stages are configured for 96 threads; the two tree analyses run sequentially.
+stages are configured for 96 threads; tree analyses run sequentially.
 Some operations are inherently serial or have fewer available parallel tasks.
 The workflow checks the node and allocation before calculation. Node2 SSH may
 be denied before a Slurm allocation is active; submission does not require SSH.
 
-Inside that allocation, `make plot-reference`, `make plot-inferred` and
-`make verify` are the corresponding direct commands. `make run` generates both
+Inside that allocation, the Make targets can be run directly.
+`make run` generates all three
 figures; `make plot` remains an alias for `plot-reference`. `make extract` can
-be used separately without a cluster allocation.
+be used separately without a cluster allocation, as can `make extract-raw`.
 
 `make setup-bedtools` verifies the official static binary against its SHA256.
 `make setup-blast` and `make setup-phylogeny` use matching local installations
@@ -125,6 +135,16 @@ The resulting 29 sequences contain 567,757 bases and reproduce the reference
 FASTA bytes exactly. Source target products are annotated Nramp divalent-metal
 transporters; `Uptake-Gene` is the supplied analysis label.
 
+The independent raw route uses `data/region_manifest.tsv`, a frozen list of the
+same historical intervals and target accessions. These are fixed regions, not
+newly selected flanks. `scripts/extract_raw_regions.py` validates each target
+protein and parent locus against its source GFF, extracts the genome sequence
+with BEDTools, and intersects every original gene or pseudogene with the region.
+It reproduces the same FASTA without consulting curated annotations or reference
+FASTA. Raw local starts are true 1-based coordinates, including boundary
+clipping; the historical curated one-base offset is not carried into this entry.
+All raw outputs are separate under `results/raw/`.
+
 `config/blast.json` specifies the search parameters. Local `makeblastdb` builds
 one database from the extracted regions and `blastn -task megablast` searches
 those same regions with 96 threads. Other settings are word size 28, reward 1,
@@ -144,9 +164,10 @@ The workflow converts full extracted FASTA headers to stable legacy `seq_id`
 values through `results/regions.tsv`, never by truncating strings. Repeated
 species names are metadata and do not replace unique tip identifiers.
 
-Two branches are generated under `results/phylogeny/`:
+Two branches are generated under `results/phylogeny/`; the raw route independently
+generates the same branch types under `results/raw/phylogeny/`:
 
-- `default/`: original forward-genomic regions, used by `plot-inferred`.
+- `default/`: original forward-genomic regions, used by the corresponding inferred entry.
 - `oriented/`: a diagnostic control reverse-complementing the 12 regions whose
   GFF target strand is negative, so all targets have a common direction.
 
@@ -162,7 +183,7 @@ The thread options change resources only. No trimming, automatic direction
 adjustment, specified substitution model, outgroup or support replicates are
 added. The initial `MODE=default` run does not specify a seed. Its actual seeds,
 model choices, versions, commands, alignment statistics and hashes are recorded.
-The oriented tree is a diagnostic result, not a third plotting entry point.
+The oriented tree is a diagnostic result and is not used for synteny plotting.
 
 `MODE=replay` uses seeds and expected hashes in
 `config/phylogeny_replay.json` and writes trees under `results/phylogeny_replay/`,
@@ -176,11 +197,19 @@ Existing incompatible outputs cause an error instead of silent replacement.
 it refuses to replace a different recorded baseline. Tree byte differences during
 replay are reported alongside topology and branch-length comparisons.
 
+For the raw route, `MODE=replay` uses the same recorded original-run seeds
+because the sequence inputs are identical; it does not replay the separate
+raw default run's random seeds. Trees are written under
+`results/raw/phylogeny_replay/` and the figure under `results/raw/inferred/`.
+Raw tree manifests record their own commands, actual seeds, software versions
+and input hashes. `results/raw/phylogeny/species.tsv` maps unique tree tip IDs
+to source species and strains; the synteny figure displays species labels.
+
 Species and strains are inherited from bundled assembly metadata: 13 species
 and eight genera. Assembly status and notes are retained, including the
 suppressed assembly GCF_003460245.1. Generated region trees are not described as
-species trees. Annotated Newick files retain distinct sequence IDs, and PDF/PNG
-phylograms show branch lengths and species/strain labels.
+species trees. The curated workflow's comparison reports additionally export
+annotated Newick files and PDF/PNG phylograms with species/strain labels.
 
 The original alignment, software settings, seed and run logs were not supplied.
 The reference has numeric node labels, while default inference does not request
@@ -212,11 +241,17 @@ GTR+F+I+R5, respectively; branch-length comparisons remain descriptive.
 | `extraction_*.tsv` | Mapping/reference validation, counts and versions |
 | `blast/` | Raw HSPs, commands, versions and historical comparison |
 | `reference/`, `inferred/` | Synteny PDF/PNG, caption, figure style, plot order, links, metrics and input hashes |
+| `raw/extracted_29_sequences.fasta`, `raw/regions.tsv` | Independent extraction from the fixed region manifest |
+| `raw/genes.tsv`, `raw/neighbors.tsv` | All 606 original annotations, local/genomic coordinates and clipping flags |
+| `raw/blast_hits.csv`, `raw/blast/` | Independent local BLAST results and audit |
+| `raw/phylogeny/` | Independent alignments, trees, species mapping and provenance |
+| `raw/inferred/` | Original-GFF synteny PDF/PNG and plotting audit tables |
 | `phylogeny/species.tsv` | Explicit ID, species, strain, assembly and strand mapping |
 | `phylogeny/{default,oriented}/` | Inputs, alignments, IQ-TREE outputs, annotated trees and run manifests |
 | `phylogeny/comparison.tsv`, `phylogeny/summary.md` | Historical-tree and direction-control comparisons |
 | `phylogeny_replay/` | Seeded replay trees and comparisons with the recorded initial trees |
 | `validation/clean_replay.json` | Observed clean-export hashes, topology comparisons and Slurm status |
+| `validation/raw_clean_entry.json` | Raw-entry verification with curated annotations and supplied tree absent |
 
 `data/blast_hits.csv` is generated and ignored by Git. Raw inputs and references
 are tracked and covered by `data/checksums.sha256`; generated results and logs
@@ -225,11 +260,14 @@ are ignored. Only full assembly FASTA and GFF are bundled per genome.
 Verification checks exact extraction bytes and all annotation mappings; BLAST
 geometry/order; alignment length, ID sets and ungapped-input equality; tree tip
 sets and species labels; plotting coordinates, annotation counts and image
-formats. The reference figure retains 135 links. The inferred figure derives
-its own adjacent links from the inferred topology. Both figures retain all 579
-manual annotations and 29 uptake markers.
+formats. The reference figure retains 135 links. Inferred figures derive
+their adjacent links from their own topology. Curated figures retain all 579
+manual annotations; the raw figure retains all 606 original annotations.
+Every figure contains 29 target markers. `verify-raw` independently regenerates
+the source-GFF extraction and compares all exported annotations and coordinates
+before checking the figure. `plotted_genes.tsv` records each drawn feature.
 
-The full workflow passed on node2 with 96 CPUs, then passed again from a clean
+The original two-entry workflow passed on node2 with 96 CPUs, then passed again from a clean
 Git-index export containing no generated analysis inputs. The extracted FASTA,
 BLAST CSV, both alignments and the then-current synteny PNGs were byte-identical.
 The publication layout was subsequently rerendered and verified for both entry
@@ -240,6 +278,15 @@ tree replays retained all 26 initial splits (RF = 0). Their 406-distance RMSEs
 were 4.31e-9 (default) and 6.38e-6 (oriented); Newick bytes differed, so exact
 numerical tree reproduction is not claimed. Full evidence is retained under
 `results/validation/` and `results/phylogeny_replay/`.
+
+The raw entry passed on node2/96 CPUs with fresh default and oriented inference
+(job 15053), followed by all three plotting checks (job 15054). A separate copy
+without curated annotations, the supplied tree or reference FASTA passed
+`verify-raw` (job 15055). That copy reused the validated completed tree caches
+and regenerated extraction, original annotations, BLAST and plotting outputs;
+all 14 compared files, including the PNG, were byte-identical. Its retained
+historical BLAST table was used only to audit newly calculated hits. The raw
+PDF also passed independent font, text-boundary and overlap checks.
 
 The 15-package phylogeny runtime lock was also restored successfully into a fresh
 isolated prefix; both tools passed version and dynamic-library checks. PDF

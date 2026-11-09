@@ -1,15 +1,18 @@
 #!/usr/bin/env Rscript
-# Verify manual annotations, tree-derived row order, links and output formats.
+# Verify annotation provenance, tree-derived row order, links and output formats.
 script <- normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[1]))
 source(file.path(dirname(script), "environment.R"))
 check_environment()
 args <- commandArgs(trailingOnly = TRUE)
 tree_source <- "reference"
+annotation_source <- "curated"
 phylogeny_dir <- "results/phylogeny"
-usage <- "Usage: Rscript scripts/verify_results.R [--tree-source reference|inferred] [--phylogeny-dir PATH]"
+phylogeny_explicit <- FALSE
+usage <- paste("Usage: Rscript scripts/verify_results.R [--tree-source reference|inferred]",
+               "[--annotation-source curated|raw] [--phylogeny-dir PATH]")
 while (length(args)) {
   name <- sub("=.*$", "", args[1])
-  if (!name %in% c("--tree-source", "--phylogeny-dir")) stop(usage)
+  if (!name %in% c("--tree-source", "--annotation-source", "--phylogeny-dir")) stop(usage)
   if (grepl("=", args[1], fixed = TRUE)) {
     value <- sub("^[^=]+=", "", args[1])
     args <- args[-1]
@@ -19,12 +22,28 @@ while (length(args)) {
     args <- args[-c(1, 2)]
   }
   if (!nzchar(value)) stop(usage)
-  if (name == "--tree-source") tree_source <- value else phylogeny_dir <- value
+  if (name == "--tree-source") {
+    tree_source <- value
+  } else if (name == "--annotation-source") {
+    annotation_source <- value
+  } else {
+    phylogeny_dir <- value
+    phylogeny_explicit <- TRUE
+  }
 }
-if (!tree_source %in% c("reference", "inferred")) stop(usage)
+if (!tree_source %in% c("reference", "inferred") ||
+    !annotation_source %in% c("curated", "raw")) stop(usage)
+raw_annotations <- annotation_source == "raw"
+if (raw_annotations && tree_source != "inferred") stop("Raw annotations require --tree-source inferred.")
+if (raw_annotations && !phylogeny_explicit) phylogeny_dir <- "results/raw/phylogeny"
 resolve_path <- function(path) if (startsWith(path, "/")) path else file.path(project_root, path)
 input <- function(name) file.path(project_root, "data", name)
-output <- function(name) file.path(project_root, "results", tree_source, name)
+output <- function(name) {
+  directory <- if (raw_annotations) file.path("results", "raw", tree_source) else file.path("results", tree_source)
+  file.path(project_root, directory, name)
+}
+annotations_path <- if (raw_annotations) "results/raw/genes.tsv" else "data/genes.tsv"
+blast_path <- if (raw_annotations) "results/raw/blast_hits.csv" else "data/blast_hits.csv"
 tree_path <- if (tree_source == "reference") "data/phylogeny.nwk" else file.path(phylogeny_dir, "default", "tree.treefile")
 tree_file <- normalizePath(resolve_path(tree_path), mustWork = TRUE)
 root_prefix <- paste0(normalizePath(project_root), "/")
@@ -34,16 +53,70 @@ tree$tip.label <- trimws(tree$tip.label)
 tree <- ape::ladderize(tree, right = FALSE)
 
 seqs <- read.csv(input("sequences.csv"), stringsAsFactors = FALSE)
-genes <- read.delim(input("genes.tsv"), stringsAsFactors = FALSE, quote = "", comment.char = "")
+genes <- read.delim(resolve_path(annotations_path), stringsAsFactors = FALSE, quote = "", comment.char = "")
 genomes <- read.delim(input("genomes.tsv"), stringsAsFactors = FALSE, quote = "", comment.char = "")
-blast <- read.csv(input("blast_hits.csv"), stringsAsFactors = FALSE)
+blast <- read.csv(resolve_path(blast_path), stringsAsFactors = FALSE)
+if (raw_annotations) {
+  # Compare every original feature field before applying plotting normalizations.
+  raw_genes <- genes
+  neighbors <- read.delim(resolve_path("results/raw/neighbors.tsv"), stringsAsFactors = FALSE,
+                          quote = "", comment.char = "")
+  regions <- read.delim(resolve_path("results/raw/regions.tsv"), stringsAsFactors = FALSE,
+                        quote = "", comment.char = "")
+  manifest <- read.delim(input("region_manifest.tsv"), stringsAsFactors = FALSE,
+                         quote = "", comment.char = "")
+  stopifnot(nrow(genes) == nrow(neighbors), all(names(neighbors) %in% names(genes)),
+            identical(genes[, names(neighbors)], neighbors),
+            setequal(genes$seq_id, regions$seq_id), !anyDuplicated(regions$seq_id),
+            identical(manifest$seq_id, seqs$seq_id), all(names(manifest) %in% names(regions)),
+            identical(regions[match(manifest$seq_id, regions$seq_id), names(manifest)], manifest))
+  region <- regions[match(genes$seq_id, regions$seq_id), ]
+  target_flag <- tolower(as.character(genes$is_target))
+  left_flag <- tolower(as.character(genes$clipped_left))
+  right_flag <- tolower(as.character(genes$clipped_right))
+  stopifnot(all(target_flag %in% c("true", "false")),
+            all(left_flag %in% c("true", "false")), all(right_flag %in% c("true", "false")),
+            identical(genes$start, genes$local_start_1based),
+            identical(genes$end, genes$local_end_1based),
+            all(genes$start == pmax(genes$start_1based - 1L, region$region_start0) - region$region_start0 + 1L),
+            all(genes$end == pmin(genes$end_1based, region$region_end0) - region$region_start0),
+            all(genes$local_start0 == genes$start - 1L), all(genes$local_end0 == genes$end),
+            all((left_flag == "true") == (genes$start_1based - 1L < region$region_start0)),
+            all((right_flag == "true") == (genes$end_1based > region$region_end0)),
+            identical(genes$assembly_accession, region$assembly_accession),
+            identical(genes$contig, region$contig),
+            all((target_flag == "true") == (genes$note == "Target Nramp")),
+            identical(genes$organisms, sub(" .*", "", genomes$organism_name[match(genes$seq_id, genomes$seq_id)])))
+  target <- genes[target_flag == "true", ]
+  target_region <- regions[match(target$seq_id, regions$seq_id), ]
+  target_proteins <- strsplit(target$protein_ids, ";", fixed = TRUE)
+  stopifnot(all(vapply(seq_len(nrow(target)), function(i) {
+    target_region$target_protein_id[i] %in% target_proteins[[i]]
+  }, logical(1))), identical(target$locus_tag, target_region$target_locus_tag),
+  identical(target$contig, target_region$contig),
+  identical(target$strand, target_region$target_strand))
+  expected_categories <- c("Target Nramp" = 29L, "Other protein-coding" = 458L,
+                           "RNA gene" = 103L, "Pseudogene" = 16L)
+  category <- ifelse(target_flag == "true", "Target Nramp",
+                     ifelse(genes$feature_type == "pseudogene" | genes$biotype == "pseudogene", "Pseudogene",
+                            ifelse(genes$biotype == "protein_coding", "Other protein-coding", "RNA gene")))
+  stopifnot(setequal(unique(genes$note), names(expected_categories)),
+            identical(as.integer(table(genes$note)[names(expected_categories)]), unname(expected_categories)),
+            identical(genes$note, category),
+            all(genes$biotype[category == "RNA gene"] %in% c("tRNA", "rRNA", "ncRNA", "tmRNA", "misc_RNA")))
+  caption <- paste(readLines(output("caption.txt"), warn = FALSE), collapse = " ")
+  stopifnot(grepl("original.*annotation", caption, ignore.case = TRUE),
+            !grepl("manual", caption, ignore.case = TRUE))
+}
 seqs$seq_id <- trimws(seqs$seq_id)
 for (name in c("seq_id", "strand", "note", "organisms")) genes[[name]] <- trimws(genes[[name]])
 blast$seq_id <- trimws(blast$seq_id)
 blast$seq_id2 <- trimws(blast$seq_id2)
-stars <- genes[genes$note == "Uptake-Gene", ]
+target_note <- if (raw_annotations) "Target Nramp" else "Uptake-Gene"
+stars <- genes[genes$note == target_note, ]
 genus_map <- unique(genes[, c("seq_id", "organisms")])
-stopifnot(nrow(seqs) == 29L, nrow(genes) == 579L, nrow(stars) == 29L,
+expected_genes <- if (raw_annotations) 606L else 579L
+stopifnot(nrow(seqs) == 29L, nrow(genes) == expected_genes, nrow(stars) == 29L,
           !anyDuplicated(seqs$seq_id), !anyDuplicated(tree$tip.label),
           !anyDuplicated(genomes$seq_id), !anyDuplicated(genus_map$seq_id),
           setequal(tree$tip.label, seqs$seq_id), setequal(genes$seq_id, seqs$seq_id),
@@ -73,6 +146,13 @@ stopifnot(identical(rows$seq_id, tree_rows$seq_id), !anyDuplicated(rows$seq_id),
           all(rows$uptake_genes == 1L),
           identical(rows$organisms, genus_map$organisms[match(rows$seq_id, genus_map$seq_id)]),
           identical(rows$organism_name, genomes$organism_name[match(rows$seq_id, genomes$seq_id)]))
+if (raw_annotations) {
+  plotted_genes <- read.delim(output("plotted_genes.tsv"), stringsAsFactors = FALSE,
+                              quote = "", comment.char = "")
+  stopifnot(identical(names(plotted_genes), c(names(raw_genes), "y_pos")),
+            identical(plotted_genes[, names(raw_genes)], raw_genes),
+            identical(plotted_genes$y_pos, rows$y_pos[match(raw_genes$seq_id, rows$seq_id)]))
+}
 y1 <- rows$y_pos[match(blast$seq_id, rows$seq_id)]
 y2 <- rows$y_pos[match(blast$seq_id2, rows$seq_id)]
 chosen <- abs(y1 - y2) == 1 & blast$pident >= 70
@@ -80,9 +160,14 @@ selected <- blast[chosen, ]
 hits <- read.csv(output("plotted_blast_hits.csv"), stringsAsFactors = FALSE)
 stopifnot(nrow(hits) == nrow(selected), all(names(blast) %in% names(hits)),
           all(hits$y1 == y1[chosen]), all(hits$y2 == y2[chosen]))
+colors <- read.csv(file.path(project_root, "config", "colors.csv"), stringsAsFactors = FALSE)
+if (raw_annotations) {
+  raw_colors <- colors[colors$group == "raw_gene", ]
+  stopifnot(nrow(raw_colors) == length(expected_categories), !anyDuplicated(raw_colors$label),
+            setequal(raw_colors$label, names(expected_categories)))
+}
 if (nrow(selected)) {
   stopifnot(isTRUE(all.equal(selected, hits[, names(blast)], check.attributes = FALSE)))
-  colors <- read.csv(file.path(project_root, "config", "colors.csv"), stringsAsFactors = FALSE)
   levels <- colors$label[colors$group == "identity"]
   stopifnot(identical(hits$grad, ifelse(hits$pident >= 90, levels[1],
                                       ifelse(hits$pident >= 80, levels[2], levels[3]))))
@@ -97,6 +182,7 @@ calculated <- c(
   identity_80to90 = sum(hits$pident >= 80 & hits$pident < 90),
   identity_70to80 = sum(hits$pident >= 70 & hits$pident < 80))
 expected <- read.delim(file.path(project_root, "config", "expected_metrics.tsv"))
+if (raw_annotations) expected$value[match(c("genes", "gene_categories"), expected$metric)] <- c(606L, 4L)
 actual <- read.delim(output("metrics.tsv"))
 stopifnot(identical(actual$metric, expected$metric), identical(actual$metric, names(calculated)),
           isTRUE(all.equal(actual$value, unname(calculated), check.attributes = FALSE)),
@@ -105,8 +191,8 @@ if (tree_source == "reference") {
   stopifnot(identical(actual$value, expected$value), calculated[["adjacent_pairs"]] == nrow(rows) - 1L)
 }
 
-metadata_paths <- c(tree = tree_path, annotations = "data/genes.tsv", sequences = "data/sequences.csv",
-                    blast_hits = "data/blast_hits.csv", genomes = "data/genomes.tsv", colors = "config/colors.csv",
+metadata_paths <- c(tree = tree_path, annotations = annotations_path, sequences = "data/sequences.csv",
+                    blast_hits = blast_path, genomes = "data/genomes.tsv", colors = "config/colors.csv",
                     figure_style = "config/figure_style.tsv")
 sha256 <- function(path) {
   value <- system2("sha256sum", shQuote(resolve_path(path)), stdout = TRUE)
@@ -142,11 +228,12 @@ stopifnot(all(is.finite(configured_numbers)), all(configured_numbers > 0),
 minimum_font <- as.numeric(reported[["minimum_font_pt"]])
 maximum_font <- as.numeric(reported[["maximum_font_pt"]])
 font_sizes <- as.numeric(configured[c("text_size_pt", "species_size_pt", "sequence_size_pt")])
+row_margin <- if (raw_annotations) 44 else 56
 stopifnot(is.finite(minimum_font), is.finite(maximum_font),
           minimum_font >= 5, maximum_font <= 7, minimum_font <= maximum_font,
           all(font_sizes >= minimum_font), all(font_sizes <= maximum_font),
           isTRUE(all.equal(as.numeric(reported[["row_pitch_mm"]]),
-                           (as.numeric(configured[["height_mm"]]) - 56) / nrow(rows))))
+                           (as.numeric(configured[["height_mm"]]) - row_margin) / nrow(rows))))
 
 pdf <- readBin(output("synteny.pdf"), "raw", n = 5)
 png <- readBin(output("synteny.png"), "raw", n = 24)
@@ -246,5 +333,5 @@ if (all(nzchar(poppler))) {
          paste(font_names, collapse = ", "))
   }
 }
-cat(sprintf("Verification passed (%s): 29 sequences, 579 manual annotations, %d tree-adjacent links, input hashes, figure style, PDF with embedded Liberation Sans and PNG.\n",
-             tree_source, nrow(hits)))
+cat(sprintf("Verification passed (%s, %s): 29 sequences, %d annotations, %d tree-adjacent links, input hashes, figure style, PDF with embedded Liberation Sans and PNG.\n",
+             tree_source, annotation_source, nrow(genes), nrow(hits)))

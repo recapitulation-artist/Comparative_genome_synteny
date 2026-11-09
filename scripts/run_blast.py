@@ -45,10 +45,10 @@ def resolve_tool(name, requested, version, environment):
     return path, actual
 
 
-def prepare_input(output):
+def prepare_input(output, input_dir=ROOT / "results"):
     sequences = table(ROOT / "data" / "sequences.csv", ",")
-    regions = table(ROOT / "results" / "regions.tsv")
-    records = list(fasta_records(ROOT / "results" / "extracted_29_sequences.fasta"))
+    regions = table(input_dir / "regions.tsv")
+    records = list(fasta_records(input_dir / "extracted_29_sequences.fasta"))
     order = [row["seq_id"] for row in sequences]
     require(len(order) == 29 and len(set(order)) == 29, "Expected 29 unique sequence IDs")
     require(len(records) == len(regions) == len(order), "Region/FASTA/sequence counts differ")
@@ -155,7 +155,7 @@ def validate_reference(rows, counts, output):
                                                if row["column"] != "evalue")
     write_table(output / "metrics.tsv", [dict(metric=key, value=value) for key, value in counts.items()])
     require(counts["reference_geometry_matches"],
-            "BLAST geometry/order differs from the historical reference; see results/blast/validation.tsv")
+            f"BLAST geometry/order differs from the historical reference; see {output / 'validation.tsv'}")
     for expected in table(ROOT / "config" / "expected_blast_metrics.tsv"):
         actual = counts[expected["metric"]]
         actual = str(actual).lower() if isinstance(actual, bool) else str(actual)
@@ -168,6 +168,10 @@ def main():
     parser.add_argument("--makeblastdb", help="Local makeblastdb executable")
     parser.add_argument("--output", type=Path, default=ROOT / "data" / "blast_hits.csv",
                         help="Output CSV (default: data/blast_hits.csv)")
+    parser.add_argument("--input-dir", type=Path, default=ROOT / "results",
+                        help="Extracted FASTA and region table directory (default: results)")
+    parser.add_argument("--work-dir", type=Path, default=ROOT / "results/blast",
+                        help="BLAST work and audit directory (default: results/blast)")
     parser.add_argument("--check-tools", action="store_true", help="Check tool versions and exit")
     parser.add_argument("--threads", type=int, help="Resource override (default: locked configuration)")
     args = parser.parse_args()
@@ -183,19 +187,23 @@ def main():
     if args.check_tools:
         print(f"{blastn_version}; {db_version}")
         return
-    output = ROOT / "results" / "blast"
+    resolve = lambda path: (path if path.is_absolute() else ROOT / path).resolve()
+    output, input_dir = resolve(args.work_dir), resolve(args.input_dir)
+    require(output != ROOT and ROOT / "data" not in (output, *output.parents),
+            "BLAST work directory must not overwrite repository inputs")
     output.mkdir(parents=True, exist_ok=True)
-    ranks = prepare_input(output)
+    ranks = prepare_input(output, input_dir)
     options = []
     for name in BLAST_OPTIONS:
         value = config[name]
         options.extend(["-" + name, str(value).lower() if isinstance(value, bool) else str(value)])
+    portable = lambda path: str(path.relative_to(ROOT)) if ROOT in path.parents else str(path)
     templates = dict(environment=BLAST_ENV,
-                     makeblastdb=["makeblastdb", "-in", "results/blast/sequences.fasta", "-dbtype", "nucl",
+                     makeblastdb=["makeblastdb", "-in", portable(output / "sequences.fasta"), "-dbtype", "nucl",
                                   "-parse_seqids", "-blastdb_version", str(config["db_version"]),
                                   "-out", "<temporary>/regions"],
-                     blastn=["blastn", "-query", "results/blast/sequences.fasta", "-db", "<temporary>/regions",
-                             "-out", "results/blast/all_hits.tsv", "-outfmt", config["outfmt"], *options])
+                     blastn=["blastn", "-query", portable(output / "sequences.fasta"), "-db", "<temporary>/regions",
+                             "-out", portable(output / "all_hits.tsv"), "-outfmt", config["outfmt"], *options])
     (output / "commands.json").write_text(json.dumps(templates, indent=2) + "\n", encoding="utf-8")
     write_table(output / "versions.tsv", [dict(tool="blastn", version=blastn_version),
                                             dict(tool="makeblastdb", version=db_version),

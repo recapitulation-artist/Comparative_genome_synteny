@@ -12,6 +12,7 @@ files remain unchanged.
 | `phylogeny.nwk` | `aligned_29_sequences_high.fasta.treefile` | Supplied 29-tip tree |
 | `reference_sequences.fasta` | `extracted_29_sequences.fasta` | Validation reference, never used to derive extraction coordinates |
 | `genomes.tsv` | `Enterobacteriaceae_genomes/genomes.tsv` | Assembly accessions, sequence identifiers and biological metadata |
+| `region_manifest.tsv` | Verified historical genome intervals | Fixed 0-based half-open bounds, target proteins and locus tags for the independent raw route |
 | `genomes/GCF_*/genome.fna.gz` | Assembly `*_genomic.fna` | Full assembly FASTA |
 | `genomes/GCF_*/annotation.gff.gz` | Assembly `*_genomic.gff` | Full source GFF annotation |
 
@@ -64,11 +65,22 @@ extracted region and clipping flags identify truncated features. Neighbor rows
 come from all overlapping source GFF genes and pseudogenes and may differ in
 count from the curated historical plot annotations.
 
+`region_manifest.tsv` freezes the verified historical intervals for the raw
+entry. Its columns are `seq_id`, `assembly_accession`, `contig`, `region_start0`,
+`region_end0`, `target_protein_id` and `target_locus_tag`. The original FASTA/GFF,
+this manifest and the sequence/genome indexes suffice to regenerate raw
+sequences and annotations without opening `genes.tsv`. The manifest preserves
+the original region selection; no new flank length is inferred.
+
 ## Trees and plotting annotations
 
-Both plotting entry points read this same `genes.tsv`, copied byte-for-byte from
-`29gene2.txt`. Source GFF annotations identify extraction targets and recover
-neighbor tables; they do not replace the manual plotting annotations.
+`plot-reference` and `plot-inferred` read the same `genes.tsv`, copied byte-for-byte
+from `29gene2.txt`. `plot-raw-inferred` reads only regenerated original GFF
+annotations under `results/raw/genes.tsv` and a separately inferred region tree.
+Raw genes use true local 1-based inclusive coordinates, clipped at region
+boundaries, and retain complete original genomic spans and metadata. The four
+raw plotting categories are target Nramp, other protein-coding, RNA gene and
+pseudogene; they do not assert shared function or orthology.
 
 `phylogeny.nwk` is the immutable historical reference. New tree inference uses
 only the genome-derived extracted regions and the explicit `regions.tsv` ID
@@ -77,4 +89,4 @@ assembly status and notes. Sequence IDs remain unique when species repeat.
 
 The default tree retains genomic-forward sequence orientation. A separate
 diagnostic tree reverse-complements negative-target-strand regions; this does
-not change the original extracted FASTA or either entry point's gene coordinates.
+not change the original extracted FASTA or any entry point's gene coordinates.

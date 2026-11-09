@@ -6,11 +6,14 @@ check_environment()
 base_dir <- project_root
 args <- commandArgs(trailingOnly = TRUE)
 tree_source <- "reference"
+annotation_source <- "curated"
 phylogeny_dir <- "results/phylogeny"
-usage <- "Usage: Rscript scripts/plot_synteny.R [--tree-source reference|inferred] [--phylogeny-dir PATH]"
+phylogeny_explicit <- FALSE
+usage <- paste("Usage: Rscript scripts/plot_synteny.R [--tree-source reference|inferred]",
+               "[--annotation-source curated|raw] [--phylogeny-dir PATH]")
 while (length(args)) {
   name <- sub("=.*$", "", args[1])
-  if (!name %in% c("--tree-source", "--phylogeny-dir")) stop(usage)
+  if (!name %in% c("--tree-source", "--annotation-source", "--phylogeny-dir")) stop(usage)
   if (grepl("=", args[1], fixed = TRUE)) {
     value <- sub("^[^=]+=", "", args[1])
     args <- args[-1]
@@ -20,9 +23,22 @@ while (length(args)) {
     args <- args[-c(1, 2)]
   }
   if (!nzchar(value)) stop(usage)
-  if (name == "--tree-source") tree_source <- value else phylogeny_dir <- value
+  if (name == "--tree-source") tree_source <- value
+  if (name == "--annotation-source") annotation_source <- value
+  if (name == "--phylogeny-dir") {
+    phylogeny_dir <- value
+    phylogeny_explicit <- TRUE
+  }
 }
-if (!tree_source %in% c("reference", "inferred")) stop(usage)
+if (!tree_source %in% c("reference", "inferred") ||
+    !annotation_source %in% c("curated", "raw")) stop(usage)
+raw_annotations <- annotation_source == "raw"
+if (raw_annotations && tree_source != "inferred") stop("Raw annotations require the inferred-tree entry.")
+if (raw_annotations && !phylogeny_explicit) phylogeny_dir <- "results/raw/phylogeny"
+entry_path <- if (raw_annotations) "raw/inferred" else tree_source
+annotation_path <- if (raw_annotations) "results/raw/genes.tsv" else "data/genes.tsv"
+blast_path <- if (raw_annotations) "results/raw/blast_hits.csv" else "data/blast_hits.csv"
+target_category <- if (raw_annotations) "Target Nramp" else "Uptake-Gene"
 resolve_path <- function(path) if (startsWith(path, "/")) path else file.path(base_dir, path)
 sha256 <- function(path) {
   value <- system2("sha256sum", shQuote(resolve_path(path)), stdout = TRUE)
@@ -35,8 +51,8 @@ font_hashes <- read.table(resolve_path("environment/fonts/checksums.sha256"),
                            col.names = c("sha256", "path"), colClasses = "character")
 stopifnot(identical(unname(vapply(font_hashes$path, sha256, character(1))), font_hashes$sha256))
 Sys.setenv(FONTCONFIG_FILE = normalizePath(resolve_path("config/fonts.conf"), mustWork = TRUE))
-out_dir <- file.path(base_dir, "results", tree_source)
-inputs <- file.path(base_dir, "data", c("sequences.csv", "genes.tsv", "blast_hits.csv"))
+out_dir <- file.path(base_dir, "results", entry_path)
+inputs <- vapply(c("data/sequences.csv", annotation_path, blast_path), resolve_path, character(1))
 tree_path <- if (tree_source == "reference") "data/phylogeny.nwk" else file.path(phylogeny_dir, "default", "tree.treefile")
 tree_file <- resolve_path(tree_path)
 if (!file.exists(tree_file)) stop("Missing ", tree_source, " tree: ", tree_path)
@@ -122,7 +138,7 @@ gene_polys <- do.call(rbind, lapply(seq_len(nrow(gene_data)), function(i) {
   data.frame(x = xs, y = g$y_pos + c(-gene_h, -gene_h, 0, gene_h, gene_h),
              group = i, note = g$note)
 }))
-gene_colors <- color_group("gene")
+gene_colors <- color_group(if (raw_annotations) "raw_gene" else "gene")
 link_colors <- color_group("identity")
 genus_colors <- color_group("genus")
 legend_breaks <- names(gene_colors)
@@ -146,7 +162,7 @@ link_df <- if (!nrow(hits)) data.frame(x = numeric(), y = numeric(), group = int
                            rep(min(h$y1, h$y2) + link_offset, 2)), group = j, grad = h$grad)
   }))
 }
-stars <- gene_data[gene_data$note == "Uptake-Gene", ]
+stars <- gene_data[gene_data$note == target_category, ]
 stars$center_x <- (stars$start + stars$end) / 2
 
 # Use physical dimensions and point-sized type at the final publication size.
@@ -172,9 +188,11 @@ text_width <- function(label, size = text_pt, face = "plain") {
   vapply(label, function(x) grid::convertWidth(grid::grobWidth(
     grid::textGrob(x, gp = text_gp(size, face))), "mm", valueOnly = TRUE), numeric(1))
 }
-# Reserve 114 mm for aligned rows, 10 mm for headings and 46 mm for axes/keys.
-row_pitch <- (height_mm - 56) / n_seqs
-row_y <- function(y) 46 + (y - 0.5) * row_pitch
+# The four raw feature types need one legend row; curated categories need four.
+bottom_margin <- if (raw_annotations) 34 else 46
+key_shift <- bottom_margin - 46
+row_pitch <- (height_mm - bottom_margin - 10) / n_seqs
+row_y <- function(y) bottom_margin + (y - 0.5) * row_pitch
 max_region <- max(seq_data$length)
 
 make_layout <- function() {
@@ -196,6 +214,7 @@ legend_labels[legend_labels == "Uptake-Gene"] <- "Target Nramp"
 legend_labels[legend_labels == "Unknown"] <- "Unassigned"
 legend_faces <- ifelse(legend_breaks %in% c("Uptake-Gene", "Unknown", "nc/tRNA"),
                        "plain", "italic")
+if (raw_annotations) legend_faces[] <- "plain"
 
 draw_figure <- function(layout) {
   grid::pushViewport(grid::viewport(xscale = c(0, width_mm), yscale = c(0, height_mm)))
@@ -252,45 +271,47 @@ draw_figure <- function(layout) {
                     pch = 16, size = grid::unit(0.8, "mm"), gp = grid::gpar(col = "black"))
 
   ticks <- seq(0, max_region, by = 5000)
-  axis_y <- 44.2
+  axis_y <- 44.2 + key_shift
   line(genome_x(0), genome_x(max_region), axis_y, axis_y)
   line(genome_x(ticks), genome_x(ticks), axis_y, axis_y - 1.0)
   label(format(ticks / 1000, trim = TRUE), genome_x(ticks), axis_y - 2.3, just = "centre")
   label("Position in extracted region (kb)", (layout$genome_left + layout$genome_right) / 2,
-        37.6, 6.5, just = "centre")
-  label("Topology only; branch lengths not shown", 2, 39.0, sequence_pt)
-  line(2, width_mm - 2, 33.8, 33.8, "#8C8C8C", 0.3)
+        37.6 + key_shift, 6.5, just = "centre")
+  label("Topology only; branch lengths not shown", 2, 39.0 + key_shift, sequence_pt)
+  line(2, width_mm - 2, 33.8 + key_shift, 33.8 + key_shift, "#8C8C8C", 0.3)
 
   # Place keys explicitly to prevent clipping or crowding after journal-size export.
-  label("Genus", 2, 30.5, text_pt, "bold")
+  label("Genus", 2, 30.5 + key_shift, text_pt, "bold")
   cursor <- 14
   for (genus in names(genus_colors)) {
-    symbol(cursor, 30.5, genus_colors[[genus]])
-    label(genus, cursor + 1.5, 30.5, species_pt, "italic")
+    symbol(cursor, 30.5 + key_shift, genus_colors[[genus]])
+    label(genus, cursor + 1.5, 30.5 + key_shift, species_pt, "italic")
     cursor <- cursor + 1.5 + text_width(genus, species_pt, "italic") + 3
   }
   stopifnot(cursor <= width_mm - 1)
-  label("BLAST identity", 2, 25.1, text_pt, "bold")
+  label("BLAST identity", 2, 25.1 + key_shift, text_pt, "bold")
   cursor <- 23
   for (i in seq_along(link_levels)) {
-    grid::grid.rect(cursor + 1.5, 25.1, width = 3, height = 1.8, default.units = "native",
+    grid::grid.rect(cursor + 1.5, 25.1 + key_shift, width = 3, height = 1.8, default.units = "native",
                     gp = grid::gpar(fill = link_colors[[i]], col = "#666666", lwd = stroke(0.25)))
     identity_text <- c("90–100%", "80–<90%", "70–<80%")[i]
-    label(identity_text, cursor + 4.2, 25.1, species_pt)
+    label(identity_text, cursor + 4.2, 25.1 + key_shift, species_pt)
     cursor <- cursor + 4.2 + text_width(identity_text, species_pt) + 4
   }
-  label("Curated annotation", 2, 20.1, text_pt, "bold")
-  cell_width <- (width_mm - 4) / 7
+  label(if (raw_annotations) "Original feature type" else "Curated annotation",
+        2, 20.1 + key_shift, text_pt, "bold")
+  legend_columns <- if (raw_annotations) 4L else 7L
+  cell_width <- (width_mm - 4) / legend_columns
   for (i in seq_along(legend_breaks)) {
-    col <- (i - 1L) %% 7L
-    row <- (i - 1L) %/% 7L
+    col <- (i - 1L) %% legend_columns
+    row <- (i - 1L) %/% legend_columns
     x <- 2 + col * cell_width
-    y <- 16.0 - row * 4
+    y <- 16.0 + key_shift - row * 4
     # Arrow-shaped keys match the geometry in the gene tracks.
     grid::grid.polygon(x + c(0, 2.4, 3.3, 2.4, 0), y + c(-0.8, -0.8, 0, 0.8, 0.8),
                        default.units = "native", gp = grid::gpar(fill = gene_colors[[i]],
                        col = "#333333", lwd = stroke(number("gene_line_width_pt"))))
-    if (legend_breaks[i] == "Uptake-Gene") {
+    if (legend_breaks[i] == target_category) {
       grid::grid.points(x + 1.5, y, default.units = "native", pch = 16,
                         size = grid::unit(0.8, "mm"), gp = grid::gpar(col = "black"))
     }
@@ -322,7 +343,10 @@ caption <- paste0("Gene neighbourhoods of 29 uptake-associated loci. Rows follow
   " region-tree topology. Branch lengths and node supports are not shown; the display root does not ",
   "specify an outgroup. Coloured tip dots indicate genus. Species names are italicized and unique ",
   "sequence IDs are retained. ",
-  "Arrows show manually curated annotations and strand direction; a black dot marks each target ",
+  if (raw_annotations) paste0("Arrows show original GFF annotations as gene and pseudogene intervals and strand direction, ",
+    "clipped at extracted-region boundaries. Colours represent original feature types rather than ",
+    "orthology groups. A black dot marks each target ") else
+    "Arrows show manually curated annotations and strand direction; a black dot marks each target ",
   "Nramp divalent-metal transporter. Ribbons connect adjacent regions with BLAST nucleotide identity ",
   "of at least 70%; grey levels encode the indicated identity intervals. Coordinates are relative ",
   "to each extracted region; original genomic orientations ",
@@ -337,6 +361,7 @@ row_order$uptake_genes <- as.integer(table(stars$seq_id)[row_order$seq_id])
 stopifnot(all(row_order$uptake_genes == 1), nrow(gene_polys) == 5 * nrow(gene_data),
           nrow(link_df) == 4 * nrow(hits))
 write.csv(row_order, file.path(out_dir, "sequence_order.csv"), row.names = FALSE)
+write.table(gene_data, file.path(out_dir, "plotted_genes.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
 write.csv(hits, file.path(out_dir, "plotted_blast_hits.csv"), row.names = FALSE)
 metrics <- c(
   sequences = nrow(seq_data), tree_tips = n_seqs, genes = nrow(gene_data),
@@ -349,12 +374,12 @@ metrics <- c(
   identity_70to80 = sum(hits$pident >= 70 & hits$pident < 80))
 write.table(data.frame(metric = names(metrics), value = unname(metrics)),
             file.path(out_dir, "metrics.tsv"), sep = "\t", row.names = FALSE, quote = FALSE)
-metadata_paths <- c(tree = tree_path, annotations = "data/genes.tsv", sequences = "data/sequences.csv",
-                    blast_hits = "data/blast_hits.csv", genomes = "data/genomes.tsv", colors = "config/colors.csv",
+metadata_paths <- c(tree = tree_path, annotations = annotation_path, sequences = "data/sequences.csv",
+                    blast_hits = blast_path, genomes = "data/genomes.tsv", colors = "config/colors.csv",
                     figure_style = "config/figure_style.tsv")
 write.table(data.frame(input = names(metadata_paths), path = unname(metadata_paths),
                         sha256 = unname(vapply(metadata_paths, sha256, character(1))), tree_source = tree_source),
              file.path(out_dir, "plot_metadata.tsv"), sep = "\t", row.names = FALSE, quote = FALSE)
 writeLines(capture.output(sessionInfo()), file.path(out_dir, "session_info.txt"))
 cat(sprintf("Rendered %d sequences, %d genes and %d adjacent BLAST hits.\n", n_seqs, nrow(gene_data), nrow(hits)))
-cat(sprintf("Results: results/%s/synteny.pdf and results/%s/synteny.png\n", tree_source, tree_source))
+cat(sprintf("Results: results/%s/synteny.pdf and results/%s/synteny.png\n", entry_path, entry_path))
