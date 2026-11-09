@@ -1,5 +1,7 @@
 # Enterobacteriaceae Cd Uptake Comparative Genome Synteny
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24089973.svg)](https://doi.org/10.5281/zenodo.24089973)
+
 Compare cadmium-uptake gene neighborhoods using BEDTools, BLAST, MAFFT, IQ-TREE
 and species-annotated synteny plots. Three entries support reference reproduction,
 curated reconstruction, and automatic target discovery. FASTA/GFF data for 29
@@ -252,6 +254,13 @@ and execution records.
   not represent that query.
 - Results and installed environments are Git-ignored; share needed results
   separately.
+
+## Citation
+
+Chen, J. (2026). *Enterobacteriaceae Cd Uptake Comparative Genome Synteny*
+(v1.0.0) [Software]. Zenodo.
+[https://doi.org/10.5281/zenodo.24089974](https://doi.org/10.5281/zenodo.24089974).
+Machine-readable citation metadata: [CITATION.cff](CITATION.cff).
 
 ## License
 

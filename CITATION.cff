@@ -2,6 +2,13 @@ cff-version: "1.2.0"
 message: "If you use this software, please cite it using these metadata."
 type: software
 title: "Enterobacteriaceae Cd Uptake Comparative Genome Synteny"
+version: "v1.0.0"
+date-released: "2026-11-09"
+doi: "10.5281/zenodo.24089974"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.24089973"
+    description: "All archived versions of this software."
 authors:
   - family-names: "Chen"
     given-names: "Jiantao"
@@ -26,4 +33,3 @@ keywords:
   - "Enterobacteriaceae"
   - "phylogenetics"
   - "reproducibility"
-# Add version, date-released and doi when the first release is published.
