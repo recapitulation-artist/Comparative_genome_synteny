@@ -1,8 +1,7 @@
 # Dependencies
 
-Central inventory of runtime, installation and package dependencies. See
-[README.md](README.md) for installation and entry commands. Machine-readable
-locks in `environment/` retain exact Conda builds, package URLs and hashes.
+Runtime and installation requirements. See [README.md](README.md) for setup and
+usage; `environment/` contains exact builds, URLs and hashes.
 
 ## Platform and host
 
@@ -13,15 +12,12 @@ locks in `environment/` retain exact Conda builds, package URLs and hashes.
 | GNU Make | Tested with 4.4.1; workflow entry points |
 | Bash | Slurm runner and installation shell |
 | GNU coreutils | `sha256sum`, `cmp` and filesystem commands |
-| curl | Verified BEDTools download; included in R Conda lock |
-| Conda / Miniforge | On PATH to restore explicit environments |
+| curl | BEDTools download; included in R Conda lock |
+| Conda / Miniforge | Restore explicit environments |
 | Git | Obtain and version the repository |
-| Slurm | Optional `sbatch`/`srun`, only for submission |
+| Slurm | Optional `sbatch`/`srun` for submission |
 
-Unix file locking is used. Native macOS, Windows and ARM are outside this
-version's supported scope. Default CPU budget: 56, overridable with `THREADS`.
-Memory depends on genomes, region count and alignment size; no specific node or
-fixed memory request is required locally.
+Unix file locking is used. Memory depends on genome count and alignment size.
 
 ## Analysis software
 
@@ -33,14 +29,13 @@ fixed memory request is required locally.
 | IQ-TREE | 3.1.4 stable | Inference; `environment/phylogeny_linux_64.lock` |
 | R | 4.6.0 with Cairo | Figures/verification; `environment/conda_linux_64.lock` |
 
-Main plotting needs R and basic commands only. Curated/automatic additionally
-need Python and all sequence-analysis tools above. Executable versions and hashes
-are recorded. Official BEDTools downloads require the locked SHA256 before
-execution; other installations of the required version are accepted.
+Main plotting needs R and basic commands; reconstructed entries need all tools.
+Official BEDTools downloads require the locked SHA256; existing installations
+must match the required version.
 
-## Complete non-base R package set
+## R packages
 
-`environment/r_packages.lock.tsv` is restored by `scripts/environment.R` into
+`scripts/environment.R` restores `environment/r_packages.lock.tsv` into
 `.r_library/`.
 
 | Package | Version | Role |
@@ -52,17 +47,10 @@ execution; other installations of the required version are accepted.
 | Rcpp | 1.1.2 | Compiled ape dependency |
 
 `grid`, `grDevices`, `graphics`, `methods`, `stats`, `utils` and `parallel` ship
-with R. ggplot2/gridExtra are not needed. The R Conda lock also fixes compilers,
-Fortran, Make, Cairo, fontconfig and transitive libraries for source installation
-and consistent graphics.
+with R. The R Conda lock includes compilers, Fortran, Make, Cairo and fontconfig.
 
-## Fonts and environment records
+## Fonts
 
 Liberation Sans regular, italic and bold are bundled in `environment/fonts/`
-with license and SHA256 manifest. Relative fontconfig settings avoid dependence
-on personal fonts.
-
-Preserve every lock when distributing tracked files. Conda prefixes and compiled
-R libraries are installation artifacts and should be restored at the destination.
-Initial installation downloads software from locked URLs and CRAN/CRAN Archive;
-analysis itself needs no genome downloads.
+with their license and SHA256 manifest. Preserve all locks and fonts when
+distributing the repository; restore environments at the destination.
