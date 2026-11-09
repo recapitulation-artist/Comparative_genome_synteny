@@ -169,9 +169,13 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "data" / "blast_hits.csv",
                         help="Output CSV (default: data/blast_hits.csv)")
     parser.add_argument("--check-tools", action="store_true", help="Check tool versions and exit")
+    parser.add_argument("--threads", type=int, help="Resource override (default: locked configuration)")
     args = parser.parse_args()
     require(sys.version_info >= (3, 9), "Python 3.9 or newer is required")
     config = json.loads((ROOT / "config" / "blast.json").read_text(encoding="utf-8"))
+    if args.threads is not None:
+        require(args.threads > 0, "Thread count must be positive")
+        config["num_threads"] = args.threads
     require(config["outfmt"] == "6 " + FIELDS, "Expected the standard 12-field BLAST output")
     environment = {**os.environ, **BLAST_ENV}
     blastn, blastn_version = resolve_tool("blastn", args.blastn, config["version"], environment)

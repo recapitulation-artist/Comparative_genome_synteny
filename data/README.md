@@ -7,7 +7,7 @@ files remain unchanged.
 | File | Source | Content |
 | --- | --- | --- |
 | `sequences.csv` | `29seqs2.csv` | 29 sequence identifiers, order and region lengths |
-| `genes.tsv` | `29gene2.txt` | 579 historical annotations and 29 uptake targets |
+| `genes.tsv` | `29gene2.txt` | 579 manually curated annotations and 29 uptake targets |
 | `reference_blast_hits.csv` | `29uptake_avad3.csv` | 2,189 historical BLAST hits for comparison |
 | `phylogeny.nwk` | `aligned_29_sequences_high.fasta.treefile` | Supplied 29-tip tree |
 | `reference_sequences.fasta` | `extracted_29_sequences.fasta` | Validation reference, never used to derive extraction coordinates |
@@ -63,3 +63,18 @@ systems. Neighbor genomic spans remain complete; local spans are clipped to the
 extracted region and clipping flags identify truncated features. Neighbor rows
 come from all overlapping source GFF genes and pseudogenes and may differ in
 count from the curated historical plot annotations.
+
+## Trees and plotting annotations
+
+Both plotting entry points read this same `genes.tsv`, copied byte-for-byte from
+`29gene2.txt`. Source GFF annotations identify extraction targets and recover
+neighbor tables; they do not replace the manual plotting annotations.
+
+`phylogeny.nwk` is the immutable historical reference. New tree inference uses
+only the genome-derived extracted regions and the explicit `regions.tsv` ID
+mapping. Species and strain names are copied from `genomes.tsv`, preserving
+assembly status and notes. Sequence IDs remain unique when species repeat.
+
+The default tree retains genomic-forward sequence orientation. A separate
+diagnostic tree reverse-complements negative-target-strand regions; this does
+not change the original extracted FASTA or either entry point's gene coordinates.
