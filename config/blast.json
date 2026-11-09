@@ -1,0 +1,17 @@
+{
+  "version": "2.17.0+",
+  "task": "megablast",
+  "word_size": 28,
+  "reward": 1,
+  "penalty": -2,
+  "gapopen": 0,
+  "gapextend": 0,
+  "evalue": 10,
+  "dust": "20 64 1",
+  "soft_masking": true,
+  "strand": "both",
+  "max_target_seqs": 500,
+  "num_threads": 1,
+  "db_version": 5,
+  "outfmt": "6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore"
+}

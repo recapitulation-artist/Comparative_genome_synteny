@@ -1,0 +1,10 @@
+metric	value
+raw_hsps	4513
+retained_hsps	2189
+self_hsps_removed	135
+reciprocal_hsps_removed	2189
+sequence_pairs	406
+reference_rows	2189
+reference_evalue_differences	994
+reference_geometry_matches	true
+generated_csv_sha256	8af01147c3639f11de4b35bf4fbf3ed4ccfb3fc6b2c5c8de738b51705c1c157f
