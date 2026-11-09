@@ -3,8 +3,6 @@
 script <- normalizePath(sub("^--file=", "", grep("^--file=", commandArgs(), value = TRUE)[1]))
 source(file.path(dirname(script), "environment.R"))
 check_environment()
-suppressPackageStartupMessages(library(ggplot2))
-options(device = function(...) grDevices::pdf(NULL))
 base_dir <- project_root
 args <- commandArgs(trailingOnly = TRUE)
 tree_source <- "reference"
@@ -26,6 +24,17 @@ while (length(args)) {
 }
 if (!tree_source %in% c("reference", "inferred")) stop(usage)
 resolve_path <- function(path) if (startsWith(path, "/")) path else file.path(base_dir, path)
+sha256 <- function(path) {
+  value <- system2("sha256sum", shQuote(resolve_path(path)), stdout = TRUE)
+  hash <- substr(value[1], 1, 64)
+  if (length(hash) != 1L || !grepl("^[0-9a-f]{64}$", hash)) stop("Cannot hash input: ", path)
+  hash
+}
+# Use the same bundled TrueType faces on every node, without system substitution.
+font_hashes <- read.table(resolve_path("environment/fonts/checksums.sha256"),
+                           col.names = c("sha256", "path"), colClasses = "character")
+stopifnot(identical(unname(vapply(font_hashes$path, sha256, character(1))), font_hashes$sha256))
+Sys.setenv(FONTCONFIG_FILE = normalizePath(resolve_path("config/fonts.conf"), mustWork = TRUE))
 out_dir <- file.path(base_dir, "results", tree_source)
 inputs <- file.path(base_dir, "data", c("sequences.csv", "genes.tsv", "blast_hits.csv"))
 tree_path <- if (tree_source == "reference") "data/phylogeny.nwk" else file.path(phylogeny_dir, "default", "tree.treefile")
@@ -88,7 +97,6 @@ leaf_pos <- data.frame(seq_id = tree$tip.label, x = node_x[seq_len(n_seqs)],
                        y_pos = node_y[seq_len(n_seqs)])
 leaf_pos$organisms <- genus_map$organisms[match(leaf_pos$seq_id, genus_map$seq_id)]
 leaf_pos$organism_name <- genomes$organism_name[match(leaf_pos$seq_id, genomes$seq_id)]
-leaf_pos$display_label <- paste(leaf_pos$organism_name, leaf_pos$seq_id, sep = " | ")
 stopifnot(setequal(leaf_pos$y_pos, seq_len(n_seqs)),
           all(leaf_pos$x == max_x_tree), !anyNA(leaf_pos$organisms))
 edge <- tree$edge
@@ -141,76 +149,185 @@ link_df <- if (!nrow(hits)) data.frame(x = numeric(), y = numeric(), group = int
 stars <- gene_data[gene_data$note == "Uptake-Gene", ]
 stars$center_x <- (stars$start + stars$end) / 2
 
-# Use independent legend grobs with a single fill scale.
-y_scale <- function() scale_y_continuous(limits = c(0.5, n_seqs + 0.5), expand = c(0, 0))
-base_theme <- theme_minimal(base_size = 14) + theme(
-  panel.grid = element_blank(), axis.title.y = element_blank(),
-  axis.text.y = element_blank(), axis.ticks.y = element_blank(),
-  plot.margin = margin(10, 10, 10, 0), legend.position = "none")
-p_tree <- ggplot() +
-  geom_segment(data = tree_horizontal, aes(x = x, xend = xend, y = y, yend = yend), linewidth = 0.35) +
-  geom_segment(data = tree_vertical, aes(x = x, xend = xend, y = y, yend = yend), linewidth = 0.35) +
-  geom_point(data = leaf_pos, aes(x = x, y = y_pos, color = organisms), size = 3) +
-  geom_text(data = leaf_pos, aes(x = x + max_x_tree * 0.10, y = y_pos, label = display_label),
-            hjust = 0, size = 3.5) +
-  scale_color_manual(values = genus_colors) +
-  scale_x_continuous(limits = c(0, max_x_tree * 3.5), expand = c(0, 0)) +
-  y_scale() + labs(x = " ") + base_theme +
-  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
-p_genom <- ggplot() +
-  geom_polygon(data = link_df, aes(x = x, y = y, group = group, fill = grad),
-               alpha = 0.5, color = "black", linewidth = 0.1, rule = "evenodd") +
-  geom_segment(data = seq_data, aes(x = 0, xend = length, y = y_pos, yend = y_pos),
-               color = "black", linewidth = 0.3) +
-  geom_polygon(data = gene_polys, aes(x = x, y = y, group = group, fill = note),
-               color = "black", linewidth = 0.2) +
-  scale_fill_manual(values = c(link_colors, gene_colors)) +
-  geom_text(data = stars, aes(x = center_x, y = y_pos - 0.2, label = "*"),
-            color = "red", size = 20, fontface = "bold", vjust = 0.4, hjust = 0.5) +
-  scale_x_continuous(expand = expansion(mult = c(0.003, 0.005)), labels = scales::comma) +
-  y_scale() + labs(x = "Genomic position (bp)") + base_theme
-
-extract_legend <- function(p) {
-  g <- ggplotGrob(p + theme(legend.position = "bottom", legend.text = element_text(size = 12),
-                          legend.title = element_text(size = 13, face = "bold"),
-                          legend.key.size = grid::unit(0.55, "cm")))
-  idx <- which(g$layout$name == "guide-box-bottom")
-  if (length(idx) != 1 || inherits(g$grobs[[idx]], "zeroGrob")) stop("Legend extraction failed.")
-  g$grobs[[idx]]
+# Use physical dimensions and point-sized type at the final publication size.
+style_path <- file.path(base_dir, "config", "figure_style.tsv")
+style_table <- read.delim(style_path, stringsAsFactors = FALSE)
+style <- setNames(style_table$value, style_table$parameter)
+number <- function(name) as.numeric(style[[name]])
+width_mm <- number("width_mm")
+height_mm <- number("height_mm")
+font_family <- style[["font_family"]]
+text_pt <- number("text_size_pt")
+species_pt <- number("species_size_pt")
+sequence_pt <- number("sequence_size_pt")
+stopifnot(width_mm == 183, height_mm == 170, font_family == "Liberation Sans",
+          all(c(text_pt, species_pt, sequence_pt) >= 5),
+          all(c(text_pt, species_pt, sequence_pt) <= 7))
+# grid line widths use 1/96 inch, whereas the style is specified in points.
+stroke <- function(points) points * 96 / 72
+text_gp <- function(size = text_pt, face = "plain") {
+  grid::gpar(fontfamily = font_family, fontsize = size, fontface = face, col = "black")
 }
-genus_legend <- extract_legend(ggplot(leaf_pos, aes(x, y_pos, color = organisms)) +
-  geom_point(size = 3) + scale_color_manual(values = genus_colors, name = "Genus") +
-  guides(color = guide_legend(nrow = 1)))
-identity_legend <- extract_legend(ggplot(data.frame(grad = factor(link_levels, levels = link_levels), x = 1:3),
-  aes(x, x, fill = grad)) + geom_tile(alpha = 0.5, color = "black", linewidth = 0.1) +
-  scale_fill_manual(values = link_colors, name = "BLAST identity", breaks = link_levels,
-                    labels = c(">=90%", "80 to <90%", "70 to <80%"), drop = FALSE) +
-  guides(fill = guide_legend(nrow = 1)))
-gene_legend <- extract_legend(ggplot(data.frame(note = factor(legend_breaks, levels = legend_breaks),
-                                              x = seq_along(legend_breaks)), aes(x, x, fill = note)) +
-  geom_tile(color = "black", linewidth = 0.2) +
-  scale_fill_manual(values = gene_colors, breaks = legend_breaks, name = "Gene note") +
-  guides(fill = guide_legend(ncol = 7, byrow = TRUE)))
+text_width <- function(label, size = text_pt, face = "plain") {
+  vapply(label, function(x) grid::convertWidth(grid::grobWidth(
+    grid::textGrob(x, gp = text_gp(size, face))), "mm", valueOnly = TRUE), numeric(1))
+}
+# Reserve 114 mm for aligned rows, 10 mm for headings and 46 mm for axes/keys.
+row_pitch <- (height_mm - 56) / n_seqs
+row_y <- function(y) 46 + (y - 0.5) * row_pitch
+max_region <- max(seq_data$length)
 
-tree_grob <- ggplotGrob(p_tree)
-genome_grob <- ggplotGrob(p_genom)
-stopifnot(length(tree_grob$heights) == length(genome_grob$heights))
-aligned_heights <- grid::unit.pmax(tree_grob$heights, genome_grob$heights)
-tree_grob$heights <- genome_grob$heights <- aligned_heights
-main_grob <- gridExtra::arrangeGrob(tree_grob, genome_grob, ncol = 2, widths = c(1.3, 5))
-top_legends <- gridExtra::arrangeGrob(genus_legend, identity_legend, ncol = 2, widths = c(2.4, 1))
-heading <- grid::textGrob(sprintf("Cd-Uptake Gene Cluster: %d sequences | %s tree", n_seqs, tree_source),
-                          gp = grid::gpar(fontsize = 19, fontface = "bold"))
-final_plot <- gridExtra::arrangeGrob(heading, main_grob, top_legends, gene_legend, ncol = 1,
-  heights = grid::unit.c(grid::unit(0.5, "in"), grid::unit(1, "null"),
-                         grid::unit(0.65, "in"), grid::unit(1.25, "in")))
+make_layout <- function() {
+  tree_left <- 2
+  tree_right <- 24
+  species_x <- tree_right + 3
+  species_width <- max(text_width(leaf_pos$organism_name, species_pt, "italic"))
+  id_x <- species_x + species_width + 2.5
+  id_width <- max(text_width(leaf_pos$seq_id, sequence_pt))
+  genome_left <- id_x + id_width + 2.5
+  genome_right <- width_mm - 2
+  stopifnot(genome_right - genome_left >= 100)
+  list(tree_left = tree_left, tree_right = tree_right, species_x = species_x,
+       species_width = species_width, id_x = id_x, id_width = id_width,
+       genome_left = genome_left, genome_right = genome_right)
+}
+legend_labels <- legend_breaks
+legend_labels[legend_labels == "Uptake-Gene"] <- "Target Nramp"
+legend_labels[legend_labels == "Unknown"] <- "Unassigned"
+legend_faces <- ifelse(legend_breaks %in% c("Uptake-Gene", "Unknown", "nc/tRNA"),
+                       "plain", "italic")
+
+draw_figure <- function(layout) {
+  grid::pushViewport(grid::viewport(xscale = c(0, width_mm), yscale = c(0, height_mm)))
+  label <- function(text, x, y, size = text_pt, face = "plain", just = "left") {
+    grid::grid.text(text, x, y, default.units = "native", just = just,
+                    gp = text_gp(size, face))
+  }
+  line <- function(x, xend, y, yend, color = "#262626", points = number("line_width_pt")) {
+    grid::grid.segments(x, y, xend, yend, default.units = "native",
+                        gp = grid::gpar(col = color, lwd = stroke(points), lineend = "butt"))
+  }
+  symbol <- function(x, y, fill, size = 1.1) {
+    grid::grid.points(rep_len(x, max(length(x), length(y))),
+                      rep_len(y, max(length(x), length(y))),
+                      default.units = "native", pch = 21, size = grid::unit(size, "mm"),
+                      gp = grid::gpar(col = "#333333", fill = fill, lwd = stroke(0.25)))
+  }
+  tree_x <- function(x) layout$tree_left + x / max_x_tree * (layout$tree_right - layout$tree_left)
+  genome_x <- function(x) layout$genome_left + x / max_region *
+    (layout$genome_right - layout$genome_left)
+
+  heading_y <- height_mm - 4
+  label(if (tree_source == "reference") "Reference tree" else "Inferred tree",
+        layout$tree_left, heading_y, 6.5, "bold")
+  label("Species", layout$species_x, heading_y, 6.5, "bold")
+  label("Sequence ID", layout$id_x, heading_y, 6.5, "bold")
+  label("Gene neighbourhood", layout$genome_left, heading_y, 6.5, "bold")
+  line(2, width_mm - 2, height_mm - 7, height_mm - 7, "#8C8C8C", 0.3)
+
+  # A cladogram preserves the input display root, without implying an outgroup.
+  line(tree_x(tree_horizontal$x), tree_x(tree_horizontal$xend),
+       row_y(tree_horizontal$y), row_y(tree_horizontal$yend))
+  line(tree_x(tree_vertical$x), tree_x(tree_vertical$xend),
+       row_y(tree_vertical$y), row_y(tree_vertical$yend))
+  symbol(layout$tree_right + 1.1, row_y(leaf_pos$y_pos), genus_colors[leaf_pos$organisms])
+  label(leaf_pos$organism_name, layout$species_x, row_y(leaf_pos$y_pos), species_pt, "italic")
+  label(leaf_pos$seq_id, layout$id_x, row_y(leaf_pos$y_pos), sequence_pt)
+
+  if (nrow(link_df)) {
+    fills <- link_colors[link_df$grad[!duplicated(link_df$group)]]
+    grid::grid.path(genome_x(link_df$x), row_y(link_df$y),
+                    id = link_df$group, pathId = link_df$group,
+                       default.units = "native", rule = "evenodd",
+                       gp = grid::gpar(fill = fills, col = "#B0B0B0", lwd = stroke(0.25)))
+  }
+  line(genome_x(0), genome_x(seq_data$length), row_y(seq_data$y_pos), row_y(seq_data$y_pos),
+       "#5A5A5A", 0.3)
+  fills <- gene_colors[gene_polys$note[!duplicated(gene_polys$group)]]
+  grid::grid.polygon(genome_x(gene_polys$x), row_y(gene_polys$y), id = gene_polys$group,
+                     default.units = "native", gp = grid::gpar(fill = fills, col = "#333333",
+                     lwd = stroke(number("gene_line_width_pt")), linejoin = "mitre"))
+  # A small black dot identifies the white target arrow without covering its outline.
+  grid::grid.points(genome_x(stars$center_x), row_y(stars$y_pos), default.units = "native",
+                    pch = 16, size = grid::unit(0.8, "mm"), gp = grid::gpar(col = "black"))
+
+  ticks <- seq(0, max_region, by = 5000)
+  axis_y <- 44.2
+  line(genome_x(0), genome_x(max_region), axis_y, axis_y)
+  line(genome_x(ticks), genome_x(ticks), axis_y, axis_y - 1.0)
+  label(format(ticks / 1000, trim = TRUE), genome_x(ticks), axis_y - 2.3, just = "centre")
+  label("Position in extracted region (kb)", (layout$genome_left + layout$genome_right) / 2,
+        37.6, 6.5, just = "centre")
+  label("Topology only; branch lengths not shown", 2, 39.0, sequence_pt)
+  line(2, width_mm - 2, 33.8, 33.8, "#8C8C8C", 0.3)
+
+  # Place keys explicitly to prevent clipping or crowding after journal-size export.
+  label("Genus", 2, 30.5, text_pt, "bold")
+  cursor <- 14
+  for (genus in names(genus_colors)) {
+    symbol(cursor, 30.5, genus_colors[[genus]])
+    label(genus, cursor + 1.5, 30.5, species_pt, "italic")
+    cursor <- cursor + 1.5 + text_width(genus, species_pt, "italic") + 3
+  }
+  stopifnot(cursor <= width_mm - 1)
+  label("BLAST identity", 2, 25.1, text_pt, "bold")
+  cursor <- 23
+  for (i in seq_along(link_levels)) {
+    grid::grid.rect(cursor + 1.5, 25.1, width = 3, height = 1.8, default.units = "native",
+                    gp = grid::gpar(fill = link_colors[[i]], col = "#666666", lwd = stroke(0.25)))
+    identity_text <- c("90–100%", "80–<90%", "70–<80%")[i]
+    label(identity_text, cursor + 4.2, 25.1, species_pt)
+    cursor <- cursor + 4.2 + text_width(identity_text, species_pt) + 4
+  }
+  label("Curated annotation", 2, 20.1, text_pt, "bold")
+  cell_width <- (width_mm - 4) / 7
+  for (i in seq_along(legend_breaks)) {
+    col <- (i - 1L) %% 7L
+    row <- (i - 1L) %/% 7L
+    x <- 2 + col * cell_width
+    y <- 16.0 - row * 4
+    # Arrow-shaped keys match the geometry in the gene tracks.
+    grid::grid.polygon(x + c(0, 2.4, 3.3, 2.4, 0), y + c(-0.8, -0.8, 0, 0.8, 0.8),
+                       default.units = "native", gp = grid::gpar(fill = gene_colors[[i]],
+                       col = "#333333", lwd = stroke(number("gene_line_width_pt"))))
+    if (legend_breaks[i] == "Uptake-Gene") {
+      grid::grid.points(x + 1.5, y, default.units = "native", pch = 16,
+                        size = grid::unit(0.8, "mm"), gp = grid::gpar(col = "black"))
+    }
+    label(legend_labels[i], x + 4.5, y, species_pt, legend_faces[i])
+    stopifnot(text_width(legend_labels[i], species_pt, legend_faces[i]) + 4.5 < cell_width)
+  }
+  grid::popViewport()
+}
 
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 pdf_file <- file.path(out_dir, "synteny.pdf")
 png_file <- file.path(out_dir, "synteny.png")
-ggsave(pdf_file, final_plot, device = grDevices::cairo_pdf, width = 28, height = 30, limitsize = FALSE)
-ggsave(png_file, final_plot, device = "png", type = "cairo", bg = "white",
-       width = 28, height = 30, dpi = 150, limitsize = FALSE)
+grDevices::cairo_pdf(pdf_file, width = width_mm / 25.4, height = height_mm / 25.4,
+                     family = font_family, pointsize = text_pt, bg = "white")
+grid::grid.newpage()
+layout <- make_layout()
+tryCatch(draw_figure(layout), finally = grDevices::dev.off())
+grDevices::png(png_file, width = width_mm, height = height_mm, units = "mm",
+               res = number("png_dpi"), type = "cairo", family = font_family,
+               pointsize = text_pt, bg = "white")
+grid::grid.newpage()
+tryCatch(draw_figure(layout), finally = grDevices::dev.off())
+write.table(rbind(style_table, data.frame(parameter = c("tree_representation", "row_pitch_mm",
+                    "minimum_font_pt", "maximum_font_pt"),
+                value = c("cladogram", row_pitch, min(text_pt, species_pt, sequence_pt), 6.5))),
+            file.path(out_dir, "figure_style.tsv"), sep = "\t", quote = FALSE, row.names = FALSE)
+caption <- paste0("Gene neighbourhoods of 29 uptake-associated loci. Rows follow the ",
+  if (tree_source == "reference") "supplied reference" else "newly inferred default-parameter",
+  " region-tree topology. Branch lengths and node supports are not shown; the display root does not ",
+  "specify an outgroup. Coloured tip dots indicate genus. Species names are italicized and unique ",
+  "sequence IDs are retained. ",
+  "Arrows show manually curated annotations and strand direction; a black dot marks each target ",
+  "Nramp divalent-metal transporter. Ribbons connect adjacent regions with BLAST nucleotide identity ",
+  "of at least 70%; grey levels encode the indicated identity intervals. Coordinates are relative ",
+  "to each extracted region; original genomic orientations ",
+  "are retained. Species annotations come from assembly metadata.")
+writeLines(caption, file.path(out_dir, "caption.txt"))
 
 row_order <- leaf_pos[order(leaf_pos$y_pos, decreasing = TRUE),
                        c("seq_id", "organisms", "organism_name", "y_pos")]
@@ -233,13 +350,8 @@ metrics <- c(
 write.table(data.frame(metric = names(metrics), value = unname(metrics)),
             file.path(out_dir, "metrics.tsv"), sep = "\t", row.names = FALSE, quote = FALSE)
 metadata_paths <- c(tree = tree_path, annotations = "data/genes.tsv", sequences = "data/sequences.csv",
-                    blast_hits = "data/blast_hits.csv", genomes = "data/genomes.tsv", colors = "config/colors.csv")
-sha256 <- function(path) {
-  value <- system2("sha256sum", shQuote(resolve_path(path)), stdout = TRUE)
-  hash <- substr(value[1], 1, 64)
-  if (length(hash) != 1L || !grepl("^[0-9a-f]{64}$", hash)) stop("Cannot hash input: ", path)
-  hash
-}
+                    blast_hits = "data/blast_hits.csv", genomes = "data/genomes.tsv", colors = "config/colors.csv",
+                    figure_style = "config/figure_style.tsv")
 write.table(data.frame(input = names(metadata_paths), path = unname(metadata_paths),
                         sha256 = unname(vapply(metadata_paths, sha256, character(1))), tree_source = tree_source),
              file.path(out_dir, "plot_metadata.tsv"), sep = "\t", row.names = FALSE, quote = FALSE)

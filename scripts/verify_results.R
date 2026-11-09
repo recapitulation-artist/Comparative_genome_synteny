@@ -106,7 +106,8 @@ if (tree_source == "reference") {
 }
 
 metadata_paths <- c(tree = tree_path, annotations = "data/genes.tsv", sequences = "data/sequences.csv",
-                    blast_hits = "data/blast_hits.csv", genomes = "data/genomes.tsv", colors = "config/colors.csv")
+                    blast_hits = "data/blast_hits.csv", genomes = "data/genomes.tsv", colors = "config/colors.csv",
+                    figure_style = "config/figure_style.tsv")
 sha256 <- function(path) {
   value <- system2("sha256sum", shQuote(resolve_path(path)), stdout = TRUE)
   hash <- substr(value[1], 1, 64)
@@ -118,12 +119,132 @@ stopifnot(identical(metadata$input, names(metadata_paths)), identical(metadata$p
           identical(metadata$sha256, unname(vapply(metadata_paths, sha256, character(1)))),
           all(metadata$tree_source == tree_source))
 
+style_config <- read.delim(resolve_path("config/figure_style.tsv"), colClasses = "character")
+style_report <- read.delim(output("figure_style.tsv"), colClasses = "character")
+required_style <- c("width_mm", "height_mm", "png_dpi", "font_family", "text_size_pt",
+                    "species_size_pt", "sequence_size_pt", "line_width_pt", "gene_line_width_pt")
+derived_style <- c("tree_representation", "row_pitch_mm", "minimum_font_pt", "maximum_font_pt")
+stopifnot(identical(names(style_config), c("parameter", "value")),
+          identical(names(style_report), c("parameter", "value")),
+          !anyDuplicated(style_config$parameter), !anyDuplicated(style_report$parameter),
+          setequal(style_config$parameter, required_style),
+          setequal(style_report$parameter, c(required_style, derived_style)),
+          !anyNA(style_config), !anyNA(style_report))
+configured <- setNames(style_config$value, style_config$parameter)
+reported <- setNames(style_report$value, style_report$parameter)
+numeric_parameters <- setdiff(required_style, "font_family")
+configured_numbers <- as.numeric(configured[numeric_parameters])
+reported_numbers <- as.numeric(reported[numeric_parameters])
+stopifnot(all(is.finite(configured_numbers)), all(configured_numbers > 0),
+          isTRUE(all.equal(reported_numbers, configured_numbers)),
+          identical(reported[["font_family"]], configured[["font_family"]]),
+          identical(reported[["tree_representation"]], "cladogram"))
+minimum_font <- as.numeric(reported[["minimum_font_pt"]])
+maximum_font <- as.numeric(reported[["maximum_font_pt"]])
+font_sizes <- as.numeric(configured[c("text_size_pt", "species_size_pt", "sequence_size_pt")])
+stopifnot(is.finite(minimum_font), is.finite(maximum_font),
+          minimum_font >= 5, maximum_font <= 7, minimum_font <= maximum_font,
+          all(font_sizes >= minimum_font), all(font_sizes <= maximum_font),
+          isTRUE(all.equal(as.numeric(reported[["row_pitch_mm"]]),
+                           (as.numeric(configured[["height_mm"]]) - 56) / nrow(rows))))
+
 pdf <- readBin(output("synteny.pdf"), "raw", n = 5)
 png <- readBin(output("synteny.png"), "raw", n = 24)
 stopifnot(identical(rawToChar(pdf), "%PDF-"),
           identical(as.integer(png[1:8]), c(137L, 80L, 78L, 71L, 13L, 10L, 26L, 10L)))
 dimensions <- vapply(list(png[17:20], png[21:24]), function(bytes) sum(as.integer(bytes) * 256^(3:0)), numeric(1))
-stopifnot(identical(dimensions, c(4200, 4500)),
+expected_dimensions <- trunc(as.numeric(configured[c("width_mm", "height_mm")]) /
+                               25.4 * as.numeric(configured[["png_dpi"]]))
+stopifnot(identical(dimensions, expected_dimensions),
           all(file.info(c(output("synteny.pdf"), output("synteny.png")))$size > 10000))
-cat(sprintf("Verification passed (%s): 29 sequences, 579 manual annotations, %d tree-adjacent links, input hashes, PDF and PNG.\n",
+
+# Inspect the uncompressed font dictionaries emitted by this Cairo exporter.
+# This deliberately supports these generated PDFs, rather than arbitrary PDF files.
+pdf_raw <- readBin(output("synteny.pdf"), "raw", n = file.info(output("synteny.pdf"))$size)
+pdf_raw[as.integer(pdf_raw) < 32L | as.integer(pdf_raw) > 126L] <- as.raw(32)
+pdf_text <- rawToChar(pdf_raw)
+objects <- regmatches(pdf_text, gregexpr("[[:digit:]]+[[:space:]]+[[:digit:]]+[[:space:]]+obj\\b.*?\\bendobj\\b",
+                                       pdf_text, perl = TRUE))[[1]]
+object_ids <- gsub("[[:space:]]+", " ", sub("[[:space:]]+obj.*$", "", objects))
+if (!length(objects) || anyDuplicated(object_ids)) stop("Cannot inspect Cairo PDF objects.")
+names(objects) <- object_ids
+pdf_field <- function(object, pattern, field) {
+  matches <- regmatches(object, regexec(pattern, object, perl = TRUE))[[1]]
+  if (length(matches) != 2L) stop("Missing or unsupported Cairo PDF ", field, ".")
+  matches[2]
+}
+pdf_object <- function(reference) {
+  id <- gsub("[[:space:]]+", " ", reference)
+  if (!id %in% names(objects)) stop("Missing Cairo PDF object: ", id)
+  objects[[id]]
+}
+font_objects <- objects[grepl("/Type[[:space:]]+/Font[[:space:]/]", objects)]
+expected_fonts <- c("LiberationSans", "LiberationSans-Italic", "LiberationSans-Bold")
+if (length(font_objects) != 3L || !identical(configured[["font_family"]], "Liberation Sans")) {
+  stop("Cairo PDF must contain exactly three Liberation Sans font dictionaries.")
+}
+font_names <- vapply(font_objects, function(object) {
+  if (!grepl("/Subtype[[:space:]]+/TrueType[[:space:]/]", object)) {
+    stop("Cairo PDF font is not TrueType.")
+  }
+  name <- pdf_field(object, "/BaseFont[[:space:]]+/([^[:space:]/<>]+)", "BaseFont")
+  descriptor_ref <- pdf_field(object, "/FontDescriptor[[:space:]]+([[:digit:]]+[[:space:]]+[[:digit:]]+)[[:space:]]+R\\b", "FontDescriptor")
+  unicode_ref <- pdf_field(object, "/ToUnicode[[:space:]]+([[:digit:]]+[[:space:]]+[[:digit:]]+)[[:space:]]+R\\b", "ToUnicode")
+  descriptor <- pdf_object(descriptor_ref)
+  descriptor_name <- pdf_field(descriptor, "/FontName[[:space:]]+/([^[:space:]/<>]+)", "FontName")
+  if (!grepl("/Type[[:space:]]+/FontDescriptor[[:space:]/]", descriptor) || descriptor_name != name) {
+    stop("Cairo PDF font descriptor does not match its font.")
+  }
+  file_ref <- pdf_field(descriptor, "/FontFile2[[:space:]]+([[:digit:]]+[[:space:]]+[[:digit:]]+)[[:space:]]+R\\b", "FontFile2")
+  font_file <- pdf_object(file_ref)
+  unicode_map <- pdf_object(unicode_ref)
+  if (!grepl("\\bstream\\b.*\\bendstream\\b", font_file, perl = TRUE) ||
+      !grepl("/Length1[[:space:]]+[1-9][[:digit:]]*\\b", font_file, perl = TRUE) ||
+      !grepl("\\bstream\\b.*\\bendstream\\b", unicode_map, perl = TRUE)) {
+    stop("Cairo PDF lacks an embedded TrueType font stream or Unicode mapping stream.")
+  }
+  sub("^[A-Z]{6}\\+", "", name)
+}, character(1), USE.NAMES = FALSE)
+if (!setequal(font_names, expected_fonts)) stop("Unexpected Cairo PDF font substitution: ",
+                                              paste(font_names, collapse = ", "))
+
+# Poppler provides an independent audit where available; compute nodes need only R.
+poppler <- Sys.which(c("pdfinfo", "pdffonts"))
+if (all(nzchar(poppler))) {
+  run_poppler <- function(tool, args) {
+    result <- suppressWarnings(system2(poppler[[tool]], args, stdout = TRUE, stderr = TRUE,
+                                      env = "LC_ALL=C"))
+    status <- attr(result, "status")
+    if (!is.null(status) && status != 0L) stop(tool, " failed: ", paste(result, collapse = "\n"))
+    result
+  }
+  pdf_info <- run_poppler("pdfinfo", c("-box", shQuote(output("synteny.pdf"))))
+  page_count <- grep("^Pages:", pdf_info, value = TRUE)
+  media_box <- grep("^MediaBox:", pdf_info, value = TRUE)
+  if (length(page_count) != 1L || length(media_box) != 1L) stop("Cannot inspect PDF page geometry.")
+  stopifnot(as.integer(trimws(sub("^Pages:", "", page_count))) == 1L)
+  box <- as.numeric(strsplit(trimws(sub("^MediaBox:", "", media_box)), "[[:space:]]+")[[1]])
+  stopifnot(length(box) == 4L, all(is.finite(box)))
+  page_mm <- c(box[3] - box[1], box[4] - box[2]) * 25.4 / 72
+  expected_mm <- as.numeric(configured[c("width_mm", "height_mm")])
+  if (any(abs(page_mm - expected_mm) >= 0.4)) stop("PDF MediaBox differs from the configured size by >=0.4 mm.")
+
+  font_output <- run_poppler("pdffonts", shQuote(output("synteny.pdf")))
+  font_rows <- font_output[seq_along(font_output) > 2L & nzchar(trimws(font_output))]
+  font_pattern <- paste0("^([^[:space:]]+)[[:space:]]+(TrueType)[[:space:]]+",
+                         "([^[:space:]]+)[[:space:]]+(yes|no)[[:space:]]+(yes|no)",
+                         "[[:space:]]+(yes|no)[[:space:]]+[[:digit:]]+[[:space:]]+[[:digit:]]+[[:space:]]*$")
+  font_fields <- regmatches(font_rows, regexec(font_pattern, font_rows))
+  if (!length(font_fields) || any(lengths(font_fields) != 7L)) {
+    stop("PDF must contain only embedded Unicode TrueType fonts; unexpected pdffonts output.")
+  }
+  font_fields <- do.call(rbind, font_fields)
+  font_names <- sub("^[A-Z]{6}\\+", "", font_fields[, 2])
+  if (length(font_names) != length(expected_fonts) || !setequal(font_names, expected_fonts) ||
+      any(font_fields[, 5] != "yes") || any(font_fields[, 7] != "yes")) {
+    stop("PDF fonts must be Liberation Sans regular, italic and bold, embedded with Unicode mappings; found: ",
+         paste(font_names, collapse = ", "))
+  }
+}
+cat(sprintf("Verification passed (%s): 29 sequences, 579 manual annotations, %d tree-adjacent links, input hashes, figure style, PDF with embedded Liberation Sans and PNG.\n",
              tree_source, nrow(hits)))

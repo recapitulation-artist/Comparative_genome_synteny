@@ -1,0 +1,10 @@
+parameter	value
+width_mm	183
+height_mm	170
+png_dpi	600
+font_family	Liberation Sans
+text_size_pt	6
+species_size_pt	5.5
+sequence_size_pt	5.2
+line_width_pt	0.5
+gene_line_width_pt	0.3

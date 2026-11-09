@@ -21,6 +21,36 @@ plot does not substitute automatically recovered GFF neighbors for the curated
 annotations. Species labels come from `data/genomes.tsv`; unique sequence IDs
 remain visible. Colors retain the eight recorded genera.
 
+## Figure layout
+
+Both entry points share `config/figure_style.tsv` and the same renderer. The
+layout follows the [Nature figure specifications](https://research-figure-guide.nature.com/figures/preparing-figures-our-specifications/)
+and [sizing guidance](https://research-figure-guide.nature.com/figures/building-and-exporting-figure-panels/):
+183 x 170 mm, 5.2–6.5 pt black sans-serif lettering, 0.25–0.5 pt strokes,
+editable vector PDF and a 600 dpi PNG preview. Cairo may round the PDF media
+box down by less than 0.4 mm. Liberation Sans 2.1.5, an Arial-metric-compatible
+sans-serif family, is bundled under `environment/fonts/` with its SIL Open Font
+License and SHA256 checksums. The regular, italic and bold faces come from the
+[official release](https://github.com/liberationfonts/liberation-fonts/releases/tag/2.1.5).
+`config/fonts.conf` selects these files on every node. The verifier inspects
+the exported Cairo PDF for all three embedded TrueType faces and Unicode
+mappings; silent font substitution fails verification. When Poppler's
+`pdfinfo` and `pdffonts` are available, it also independently checks the
+page dimensions, single-page export and font embedding.
+
+The left tree is a cladogram: row order and topology are preserved, branch
+lengths and node supports are not displayed, and no biological root is inferred.
+The 22 mm tree area is separated from italic full species names and upright
+unique sequence IDs. Tree and gene rows share the same vertical coordinates.
+
+Genus markers use the Wong eight-colour palette and BLAST identity uses three
+grey levels. Gene-category colours retain the original annotation mapping;
+28 categories should not be interpreted using colour alone. Arrow keys and
+labels identify each category, and a small black dot marks the target Nramp
+transporter. The coordinate axis reports position within each extracted region
+in kb. Each entry also writes `caption.txt` and `figure_style.tsv` alongside its
+figures, with the style configuration included in the input-hash manifest.
+
 ## Setup and execution
 
 The workflow requires Linux x86_64, Python >=3.9, Make and the locked tools.
@@ -181,7 +211,7 @@ GTR+F+I+R5, respectively; branch-length comparisons remain descriptive.
 | `regions.tsv`, `neighbors.tsv`, `regions/` | Source coordinates, target mapping and BED intervals |
 | `extraction_*.tsv` | Mapping/reference validation, counts and versions |
 | `blast/` | Raw HSPs, commands, versions and historical comparison |
-| `reference/`, `inferred/` | Synteny PDF/PNG, plot order, links, metrics and input hashes |
+| `reference/`, `inferred/` | Synteny PDF/PNG, caption, figure style, plot order, links, metrics and input hashes |
 | `phylogeny/species.tsv` | Explicit ID, species, strain, assembly and strand mapping |
 | `phylogeny/{default,oriented}/` | Inputs, alignments, IQ-TREE outputs, annotated trees and run manifests |
 | `phylogeny/comparison.tsv`, `phylogeny/summary.md` | Historical-tree and direction-control comparisons |
@@ -201,7 +231,11 @@ manual annotations and 29 uptake markers.
 
 The full workflow passed on node2 with 96 CPUs, then passed again from a clean
 Git-index export containing no generated analysis inputs. The extracted FASTA,
-BLAST CSV, both alignments and both synteny PNGs were byte-identical. Both seeded
+BLAST CSV, both alignments and the then-current synteny PNGs were byte-identical.
+The publication layout was subsequently rerendered and verified for both entry
+points, retaining the same row order, annotation counts and links. Both new
+PNGs were also reproduced byte-for-byte from clean copies of the plotting
+inputs, using the bundled fonts from an unrelated working directory. Both seeded
 tree replays retained all 26 initial splits (RF = 0). Their 406-distance RMSEs
 were 4.31e-9 (default) and 6.38e-6 (oriented); Newick bytes differed, so exact
 numerical tree reproduction is not claimed. Full evidence is retained under
