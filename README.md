@@ -2,6 +2,10 @@
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24089973.svg)](https://doi.org/10.5281/zenodo.24089973)
 
+[![Reference synteny plot showing the phylogeny and cadmium-uptake gene neighborhoods across 29 Enterobacteriaceae assemblies](docs/images/synteny-main.png)](docs/images/synteny-main.png)
+
+*Reference output from `make plot-main`. Click the image to enlarge.*
+
 Compare cadmium-uptake gene neighborhoods using BEDTools, BLAST, MAFFT, IQ-TREE
 and species-annotated synteny plots. Three entries support reference reproduction,
 curated reconstruction, and automatic target discovery. FASTA/GFF data for 29
