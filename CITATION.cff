@@ -1,5 +1,7 @@
 cff-version: "1.2.0"
-message: "If you use this software, please cite it using these metadata."
+message: >-
+  If you use this workflow, please cite the manuscript below and the archived
+  software release.
 type: software
 title: "Enterobacteriaceae Cd Uptake Comparative Genome Synteny"
 version: "v1.0.0"
@@ -14,6 +16,44 @@ authors:
     given-names: "Jiantao"
     affiliation: "Guangzhou Medical University"
     orcid: "https://orcid.org/0009-0009-3248-8980"
+preferred-citation:
+  type: unpublished
+  title: >-
+    Genome-guided discovery of a cadmium-sequestering probiotic reveals a non-canonical
+    Nramp interception mechanism
+  authors:
+    - family-names: "Wan"
+      given-names: "Yu"
+    - family-names: "Chen"
+      given-names: "Jiantao"
+      affiliation: "Guangzhou Medical University"
+      orcid: "https://orcid.org/0009-0009-3248-8980"
+    - family-names: "Wang"
+      given-names: "Lei"
+    - family-names: "Zeng"
+      given-names: "Yunong"
+    - family-names: "Du"
+      given-names: "Chaochao"
+    - family-names: "Mo"
+      given-names: "Lijun"
+    - family-names: "Wang"
+      given-names: "Yuqing"
+    - family-names: "Hu"
+      given-names: "Mengyao"
+    - family-names: "Xu"
+      given-names: "Yi"
+    - family-names: "Huang"
+      given-names: "Zhenhe"
+    - family-names: "Gao"
+      given-names: "Jie"
+    - family-names: "Gong"
+      given-names: "Shenhai"
+    - family-names: "Yang"
+      given-names: "Hui"
+    - family-names: "He"
+      given-names: "Xiaolong"
+  status: submitted
+  notes: "Unpublished manuscript under review."
 repository-code: "https://github.com/recapitulation-artist/Comparative_genome_synteny"
 url: "https://github.com/recapitulation-artist/Comparative_genome_synteny"
 abstract: >-

@@ -261,6 +261,13 @@ and execution records.
 
 ## Citation
 
+Wan, Y., Chen, J., Wang, L., Zeng, Y., Du, C., Mo, L., Wang, Y., Hu, M., Xu, Y.,
+Huang, Z., Gao, J., Gong, S., Yang, H., & He, X. *Genome-guided discovery of a
+cadmium-sequestering probiotic reveals a non-canonical Nramp interception mechanism*.
+Unpublished manuscript under review.
+
+Please also cite the archived software release:
+
 Chen, J. (2026). *Enterobacteriaceae Cd Uptake Comparative Genome Synteny*
 (v1.0.0) [Software]. Zenodo.
 [https://doi.org/10.5281/zenodo.24089974](https://doi.org/10.5281/zenodo.24089974).
